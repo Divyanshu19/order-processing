@@ -1,0 +1,80 @@
+spring:
+  application:
+    name: order-service
+  
+  datasource:
+    url: jdbc:postgresql://localhost:5435/order_db
+    username: order_user
+    password: order_password
+    driver-class-name: org.postgresql.Driver
+  
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+    show-sql: false
+  
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: false
+    consumer:
+      bootstrap-servers: localhost:9092
+      group-id: order-service-group
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "*"
+      auto-offset-reset: earliest
+
+kafka:
+  topics:
+    order-placed: order-placed
+    product-reserved: product-reserved
+    product-reservation-failed: product-reservation-failed
+    payment-initiated: payment-initiated
+    payment-completed: payment-completed
+    payment-failed: payment-failed
+
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+
+product-service:
+  base-url: http://localhost:8081/api
+
+payment-service:
+  base-url: http://localhost:8082/api
+
+logging:
+  level:
+    root: INFO
+    com.order.processing: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+  health:
+    db:
+      enabled: true
+    kafka:
+      enabled: true
+    livenessState:
+      enabled: true
+    readinessState:
+      enabled: true
+

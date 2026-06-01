@@ -1,0 +1,165 @@
+spring:
+  application:
+    name: gateway-service
+
+  # ── Redis (required by RequestRateLimiter on the payment route) ───────────
+  data:
+    redis:
+      host: localhost    # overridden by SPRING_DATA_REDIS_HOST in Docker
+      port: 6379
+
+  cloud:
+    gateway:
+      # ── Global defaults applied to every route ────────────────────────────
+      default-filters:
+        # Strip any existing X-Forwarded-For and replace with the real client IP
+        - DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials, RETAIN_UNIQUE
+        - AddResponseHeader=X-Gateway, gateway-service
+
+      # ── Route Definitions ─────────────────────────────────────────────────
+      #
+      # Convention used throughout this file:
+      #
+      #   Inbound path    →  Downstream URI
+      #   /product/**     →  http://localhost:8081  (product-service)
+      #   /order/**       →  http://localhost:8080  (order-service)
+      #   /payment/**     →  http://localhost:8082  (payment-service)
+      #
+      # Each downstream service uses context-path /api, so the RewritePath
+      # filter strips the route prefix and prepends /api/<resource-plural>.
+      #
+      # Examples:
+      #   GET  :8079/product/42          →  GET  :8081/api/products/42
+      #   POST :8079/order               →  POST :8080/api/orders
+      #   GET  :8079/payment/history     →  GET  :8082/api/payments/history
+      # ─────────────────────────────────────────────────────────────────────
+      routes:
+
+        # ── 1. Product Service ──────────────────────────────────────────────
+        - id: product-route
+          uri: http://localhost:8081
+          predicates:
+            - Path=/product/**
+          filters:
+            # Route /product/{id}, /product/{id}/stock, etc.
+            - RewritePath=/product/(?<segment>.+), /api/products/${segment}
+            # Route /product/ and /product (list-all).
+            # MUST be anchored with ^ and $ — without anchors, replaceAll() finds
+            # "/product" as a substring inside the already-rewritten "/api/products/1"
+            # and corrupts it to "/api/api/productss/1".
+            - RewritePath=^/product/?$, /api/products
+            - AddRequestHeader=X-Gateway-Source, gateway-service
+            - AddResponseHeader=X-Served-By, product-service
+            # Retry on connection failures (idempotent methods only)
+            - name: Retry
+              args:
+                retries: 3
+                series: SERVER_ERROR
+                methods: GET,HEAD
+                backoff:
+                  firstBackoff: 50ms
+                  maxBackoff: 500ms
+                  factor: 2
+                  basedOnPreviousValue: false
+          metadata:
+            response-timeout: 5000        # ms – time to wait for downstream response
+            connect-timeout: 2000         # ms – TCP connect timeout
+
+        # ── 2. Order Service ────────────────────────────────────────────────
+        - id: order-route
+          uri: http://localhost:8080
+          predicates:
+            - Path=/order/**
+          filters:
+            - RewritePath=/order/(?<segment>.+), /api/orders/${segment}
+            - RewritePath=^/order/?$, /api/orders
+            - AddRequestHeader=X-Gateway-Source, gateway-service
+            - AddResponseHeader=X-Served-By, order-service
+            - name: Retry
+              args:
+                retries: 3
+                series: SERVER_ERROR
+                methods: GET,HEAD
+                backoff:
+                  firstBackoff: 50ms
+                  maxBackoff: 500ms
+                  factor: 2
+                  basedOnPreviousValue: false
+          metadata:
+            response-timeout: 5000
+            connect-timeout: 2000
+
+        # ── 3. Payment Service ──────────────────────────────────────────────
+        - id: payment-route
+          uri: http://localhost:8082
+          predicates:
+            - Path=/payment/**
+          filters:
+            - RewritePath=/payment/(?<segment>.+), /api/payments/${segment}
+            - RewritePath=^/payment/?$, /api/payments
+            - AddRequestHeader=X-Gateway-Source, gateway-service
+            - AddResponseHeader=X-Served-By, payment-service
+            # Payment is NOT retried on error – avoid double-charging
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 50
+                redis-rate-limiter.burstCapacity: 100
+                redis-rate-limiter.requestedTokens: 1
+          metadata:
+            response-timeout: 10000       # payments may take longer
+            connect-timeout: 2000
+
+      # ── Global HTTP client settings ───────────────────────────────────────
+      httpclient:
+        connect-timeout: 2000           # ms
+        response-timeout: 10s           # ISO-8601 duration
+
+      # ── CORS global policy ────────────────────────────────────────────────
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowed-origins:
+              - "http://localhost:3000"   # React / Next.js dev server
+              - "http://localhost:4200"   # Angular dev server
+            allowed-methods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - DELETE
+              - OPTIONS
+            allowed-headers: "*"
+            allow-credentials: true
+            max-age: 3600
+
+# ── Server ────────────────────────────────────────────────────────────────────
+server:
+  port: 8079                            # Gateway listens here; well away from
+                                        # existing services (8080 / 8081 / 8082)
+
+# ── Actuator ──────────────────────────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,gateway
+  endpoint:
+    health:
+      show-details: always
+    gateway:
+      enabled: true                     # exposes /actuator/gateway/routes
+  health:
+    livenessState:
+      enabled: true
+    readinessState:
+      enabled: true
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging:
+  level:
+    root: INFO
+    com.order.processing: DEBUG
+    org.springframework.cloud.gateway: DEBUG
+    reactor.netty: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"

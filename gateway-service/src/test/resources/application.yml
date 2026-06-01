@@ -1,0 +1,44 @@
+# Test-only overrides – runs without Redis and without live downstream services.
+spring:
+  application:
+    name: gateway-service-test
+
+  cloud:
+    gateway:
+      # Minimal route set – identical IDs as production so route-presence tests pass.
+      # URIs point to localhost stubs (no real services needed for context-load tests).
+      routes:
+        - id: product-route
+          uri: http://localhost:8081
+          predicates:
+            - Path=/product/**
+          filters:
+            - RewritePath=/product/(?<segment>.*), /api/products/${segment}
+
+        - id: order-route
+          uri: http://localhost:8080
+          predicates:
+            - Path=/order/**
+          filters:
+            - RewritePath=/order/(?<segment>.*), /api/orders/${segment}
+
+        - id: payment-route
+          uri: http://localhost:8082
+          predicates:
+            - Path=/payment/**
+          filters:
+            - RewritePath=/payment/(?<segment>.*), /api/payments/${segment}
+
+server:
+  port: 0   # random port – avoids conflicts in CI
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
+logging:
+  level:
+    root: WARN
+    com.order.processing: DEBUG

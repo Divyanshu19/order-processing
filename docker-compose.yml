@@ -1,0 +1,159 @@
+services:
+  # Kafka with KRaft mode (no Zookeeper required)
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-kraft
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - order-processing-network
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # PostgreSQL for Order Service
+  postgres-order:
+    image: postgres:15-alpine
+    container_name: postgres-order
+    environment:
+      POSTGRES_DB: order_db
+      POSTGRES_USER: order_user
+      POSTGRES_PASSWORD: order_password
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres_order_data:/var/lib/postgresql/data
+    networks:
+      - order-processing-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U order_user -d order_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL for Product Service
+  postgres-product:
+    image: postgres:15-alpine
+    container_name: postgres-product
+    environment:
+      POSTGRES_DB: product_db
+      POSTGRES_USER: product_user
+      POSTGRES_PASSWORD: product_password
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_product_data:/var/lib/postgresql/data
+    networks:
+      - order-processing-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U product_user -d product_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL for Payment Service
+  postgres-payment:
+    image: postgres:15-alpine
+    container_name: postgres-payment
+    environment:
+      POSTGRES_DB: payment_db
+      POSTGRES_USER: payment_user
+      POSTGRES_PASSWORD: payment_password
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_payment_data:/var/lib/postgresql/data
+    networks:
+      - order-processing-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payment_user -d payment_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis (required by Gateway RequestRateLimiter filter) ───────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - order-processing-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── API Gateway ─────────────────────────────────────────────────────────────
+  #
+  # Runs the pre-built gateway-service JAR inside a plain OpenJDK image.
+  # Build the JAR first:
+  #   mvn -pl gateway-service package -DskipTests
+  #
+  # Downstream services (product / order / payment) are typically started as
+  # local JVM processes.  Inside Docker, reach them via host.docker.internal
+  # (Docker Desktop) or 172.17.0.1 (Linux Docker bridge).
+  gateway-service:
+    image: eclipse-temurin:17-jre
+    container_name: gateway-service
+    working_dir: /app
+    volumes:
+      - ./gateway-service/target/gateway-service-0.0.1-SNAPSHOT.jar:/app/gateway-service.jar
+    command: java -jar /app/gateway-service.jar
+    ports:
+      - "8079:8079"
+    environment:
+      SPRING_CLOUD_GATEWAY_ROUTES_0_URI: http://host.docker.internal:8081   # product-service
+      SPRING_CLOUD_GATEWAY_ROUTES_1_URI: http://host.docker.internal:8080   # order-service
+      SPRING_CLOUD_GATEWAY_ROUTES_2_URI: http://host.docker.internal:8082   # payment-service
+      SERVER_PORT: 8079
+      SPRING_DATA_REDIS_HOST: redis          # Redis container hostname
+      SPRING_DATA_REDIS_PORT: 6379
+    networks:
+      - order-processing-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8079/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  kafka_data:
+  postgres_order_data:
+  postgres_product_data:
+  postgres_payment_data:
+  redis_data:
+
+networks:
+  order-processing-network:
+    driver: bridge

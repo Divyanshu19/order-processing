@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+	<parent>
+		<groupId>com.order.processing</groupId>
+		<artifactId>order-processing</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
+		<relativePath>../pom.xml</relativePath>
+	</parent>
+
+	<artifactId>gateway-service</artifactId>
+	<packaging>jar</packaging>
+	<name>Gateway Service</name>
+	<description>Spring Cloud Gateway – single entry-point that routes /product/**, /order/**, /payment/**</description>
+
+	<properties>
+		<!-- Keep in sync with the Spring Boot BOM imported by the parent -->
+		<spring-cloud.version>2023.0.1</spring-cloud.version>
+	</properties>
+
+	<!--
+		Spring Cloud Gateway requires the Reactive stack (spring-webflux).
+		It is INCOMPATIBLE with spring-boot-starter-web (servlet stack).
+		Do NOT add spring-boot-starter-web here.
+	-->
+	<dependencies>
+		<!-- ── Core Gateway (Reactive / Netty) ─────────────────────────── -->
+		<dependency>
+			<groupId>org.springframework.cloud</groupId>
+			<artifactId>spring-cloud-starter-gateway</artifactId>
+		</dependency>
+
+		<!-- ── Actuator: /actuator/health, /actuator/gateway/routes ─────── -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-actuator</artifactId>
+		</dependency>
+
+		<!-- ── Lombok (compile-time only) ───────────────────────────────── -->
+		<dependency>
+			<groupId>org.projectlombok</groupId>
+			<artifactId>lombok</artifactId>
+			<optional>true</optional>
+		</dependency>
+
+		<!-- ── Redis Reactive: required by RequestRateLimiter filter ───────── -->
+		<!--    RequestRateLimiterGatewayFilterFactory is only registered when    -->
+		<!--    spring-boot-starter-data-redis-reactive is on the classpath.      -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+		</dependency>
+
+		<!-- ── Tests ────────────────────────────────────────────────────── -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+	<!-- Pull in the Spring Cloud BOM so versions are managed automatically -->
+	<dependencyManagement>
+		<dependencies>
+			<dependency>
+				<groupId>org.springframework.cloud</groupId>
+				<artifactId>spring-cloud-dependencies</artifactId>
+				<version>${spring-cloud.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.springframework.boot</groupId>
+				<artifactId>spring-boot-maven-plugin</artifactId>
+				<configuration>
+					<excludes>
+						<exclude>
+							<groupId>org.projectlombok</groupId>
+							<artifactId>lombok</artifactId>
+						</exclude>
+					</excludes>
+				</configuration>
+			</plugin>
+		</plugins>
+	</build>
+
+</project>

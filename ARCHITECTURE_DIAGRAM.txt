@@ -1,0 +1,435 @@
+================================================================================
+         HEALTH CHECK ARCHITECTURE & CONNECTIVITY DIAGRAM
+================================================================================
+
+                            CLIENTS
+                               |
+                               |
+        ┌──────────────────────┼──────────────────────┐
+        │                      │                      │
+        v                      v                      v
+    Port 8080             Port 8081             Port 8082
+ ┌────────────────┐  ┌────────────────┐  ┌────────────────┐
+ │  ORDER SERVICE │  │ PRODUCT SERVICE│  │ PAYMENT SERVICE│
+ └────────────────┘  └────────────────┘  └────────────────┘
+        │                     │                      │
+        │                     │                      │
+   ┌────┴─────┬────┐     ┌────┴─────┬────┐     ┌────┴─────┬────┐
+   │           │    │     │          │    │     │          │    │
+   v           v    v     v          v    v     v          v    v
+   │      Kafka    DB    │      Kafka    DB    │      Kafka    DB
+   │      Health  Health │      Health  Health │      Health  Health
+   │           │    │     │          │    │     │          │    │
+   v           v    v     v          v    v     v          v    v
+
+   ┌────────────────────────────────────────────────────────┐
+   │         /api/actuator/health Endpoints                │
+   │                                                        │
+   │  ├─ /health          → Full health report            │
+   │  ├─ /health/live     → Liveness probe               │
+   │  ├─ /health/ready    → Readiness probe              │
+   │  ├─ /info            → Service information           │
+   │  └─ /metrics         → Performance metrics           │
+   └────────────────────────────────────────────────────────┘
+
+                   ┌────────────────────────┐
+                   │   KAFKA (Port 9092)    │
+                   │                        │
+                   │ ┌──────────────────┐  │
+                   │ │  broker-1        │  │
+                   │ │  (KRaft Mode)    │  │
+                   │ └──────────────────┘  │
+                   └────────────────────────┘
+                      ▲          ▲      ▲
+                      │          │      │
+            ┌─────────┘          │      └────────┐
+            │                    │               │
+        Produces            Produces         Produces
+        Consumes            Consumes         Consumes
+            │                    │               │
+            ├─ order-service-group
+            ├─ product-service-group
+            └─ payment-service-group
+
+
+================================================================================
+                    HEALTH CHECK FLOW DIAGRAM
+================================================================================
+
+Client Request
+    │
+    v
+GET /api/actuator/health
+    │
+    v
+Spring Boot Actuator
+    │
+    ├─ Spring Built-in Checks
+    │  ├─ db (DataSourceHealthIndicator)
+    │  ├─ kafka (KafkaHealthIndicator)
+    │  ├─ livenessState
+    │  └─ readinessState
+    │
+    └─ Custom Health Indicators
+       ├─ databaseHealth (DatabaseHealthIndicator)
+       │  │
+       │  ├─ Attempt: Get connection from DataSource
+       │  │
+       │  └─ Return: UP ✓ or DOWN ✗
+       │
+       └─ kafkaHealth (KafkaHealthIndicator)
+          │
+          ├─ Attempt: Send test message via KafkaTemplate
+          │
+          └─ Return: UP ✓ or DOWN ✗
+    │
+    v
+Aggregate Results
+    │
+    └─ If ALL UP:  Return HTTP 200 with status "UP"
+    └─ If ANY DOWN: Return HTTP 503 with status "DOWN"
+
+
+================================================================================
+                  COMPONENT INTERACTION DIAGRAM
+================================================================================
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│                           SERVICE STARTUP                                  │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  1. Spring Boot Application Starts                                          │
+│     │                                                                       │
+│     ├─ Load Configuration (application.yml)                                 │
+│     │  ├─ Database credentials                                              │
+│     │  ├─ Kafka bootstrap servers                                           │
+│     │  └─ Actuator configuration                                            │
+│     │                                                                       │
+│     ├─ Initialize DataSource                                               │
+│     │  ├─ Create connection pool                                            │
+│     │  └─ Database health check ① (fails → startup fails)                   │
+│     │                                                                       │
+│     ├─ Initialize Kafka Template                                           │
+│     │  ├─ Connect to broker                                                 │
+│     │  └─ Kafka health check ② (fails → startup fails)                      │
+│     │                                                                       │
+│     ├─ Register Health Indicators                                           │
+│     │  ├─ DatabaseHealthIndicator                                           │
+│     │  ├─ KafkaHealthIndicator                                              │
+│     │  └─ Spring built-ins                                                  │
+│     │                                                                       │
+│     └─ Application Fully Started ✓                                          │
+│        └─ Health endpoint ready to serve requests                           │
+│                                                                             │
+│  2. Health Check Request Received                                           │
+│     │                                                                       │
+│     ├─ Execute all health indicators                                        │
+│     │  ├─ Spring db health                                                  │
+│     │  ├─ Spring kafka health                                               │
+│     │  ├─ Custom databaseHealth                                             │
+│     │  ├─ Custom kafkaHealth                                                │
+│     │  ├─ livenessState                                                     │
+│     │  └─ readinessState                                                    │
+│     │                                                                       │
+│     ├─ Aggregate Results                                                    │
+│     │  ├─ All UP → HTTP 200                                                 │
+│     │  └─ Any DOWN → HTTP 503                                               │
+│     │                                                                       │
+│     └─ Return JSON Response                                                │
+│        └─ Include component statuses & details                             │
+│                                                                             │
+└────────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                    DATABASE CONNECTIVITY DIAGRAM
+================================================================================
+
+                    APPLICATION LAYER
+                  ┌─────────────────────┐
+                  │  DatabaseHealth     │
+                  │   Indicator         │
+                  └──────────┬──────────┘
+                             │
+                             │ Uses DataSource
+                             v
+                  ┌─────────────────────┐
+                  │  HikariCP           │
+                  │  Connection Pool    │
+                  ├─────────────────────┤
+                  │ ┌─────────────────┐ │
+                  │ │ Connection 1    │ │
+                  │ ├─────────────────┤ │
+                  │ │ Connection 2    │ │
+                  │ ├─────────────────┤ │
+                  │ │ Connection N    │ │
+                  │ └─────────────────┘ │
+                  └──────────┬──────────┘
+                             │
+                             │ JDBC
+                             v
+                  DATABASE LAYER
+                  ┌─────────────────────┐
+                  │   PostgreSQL        │
+                  ├─────────────────────┤
+                  │ order-service   5432│
+                  │ product-service 5433│
+                  │ payment-service 5434│
+                  └─────────────────────┘
+
+Health Check Logic:
+  1. Get connection from pool
+  2. Check connection is open
+  3. Return UP if successful
+  4. Return DOWN if failed
+
+
+================================================================================
+                      KAFKA CONNECTIVITY DIAGRAM
+================================================================================
+
+                    APPLICATION LAYER
+                  ┌─────────────────────┐
+                  │  KafkaHealth        │
+                  │  Indicator          │
+                  └──────────┬──────────┘
+                             │
+                             │ Send Test Message
+                             v
+                  ┌─────────────────────┐
+                  │  KafkaTemplate      │
+                  │  (Producer)         │
+                  └──────────┬──────────┘
+                             │
+                             │ TCP/IP (port 9092)
+                             v
+                  KAFKA CLUSTER
+                  ┌─────────────────────┐
+                  │   Kafka Broker      │
+                  │   (KRaft Mode)      │
+                  ├─────────────────────┤
+                  │ Test Message Queue  │
+                  │ health-check-topic  │
+                  ├─────────────────────┤
+                  │ order-service-group │
+                  │ product-service..   │
+                  │ payment-service..   │
+                  └─────────────────────┘
+
+Health Check Logic:
+  1. Create test message
+  2. Send to Kafka via KafkaTemplate
+  3. Wait for send confirmation (with timeout)
+  4. Return UP if successful
+  5. Return DOWN if timeout or error
+
+
+================================================================================
+                    HEALTH ENDPOINT RESPONSE FLOW
+================================================================================
+
+Client: GET /api/actuator/health
+                    │
+                    v
+            Spring Boot Actuator
+                    │
+        ┌───────────┼───────────┐
+        │           │           │
+        v           v           v
+    Check 1     Check 2     Check N
+      (db)     (kafka)    (custom)
+        │           │           │
+        │           │           │
+    UP  │       DOWN │       UP  │
+    ✓   │       ✗    │       ✓   │
+        │           │           │
+        └───────────┼───────────┘
+                    │
+                    v
+            Aggregate Status
+                    │
+        ┌───────────┴───────────┐
+        │                       │
+    All UP?               Any DOWN?
+        │                       │
+        v                       v
+    HTTP 200               HTTP 503
+    status: UP          status: DOWN
+        │                       │
+        └───────────┬───────────┘
+                    │
+                    v
+            Return JSON Response
+    {
+      "status": "UP" or "DOWN",
+      "components": {
+        "component1": { "status": "UP" },
+        "component2": { "status": "DOWN", "details": {...} }
+      }
+    }
+
+
+================================================================================
+                   KUBERNETES PROBE INTEGRATION
+================================================================================
+
+Deployment Manifest (example):
+
+  spec:
+    containers:
+    - name: order-service
+      image: order-service:latest
+      ports:
+      - containerPort: 8080
+
+      livenessProbe:
+        httpGet:
+          path: /api/actuator/health/live
+          port: 8080
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 3
+                    │
+                    ├─> Checks if service process is alive
+                    ├─> Kubernetes restarts pod if failed
+                    └─> Runs every 10 seconds after 30s startup
+
+      readinessProbe:
+        httpGet:
+          path: /api/actuator/health/ready
+          port: 8080
+        initialDelaySeconds: 10
+        periodSeconds: 5
+        timeoutSeconds: 3
+        failureThreshold: 2
+                    │
+                    ├─> Checks if service is ready for traffic
+                    ├─> Load balancer removes pod if failed
+                    └─> Runs every 5 seconds after 10s startup
+
+
+================================================================================
+                       SERVICE COMMUNICATION
+================================================================================
+
+                        ┌─────────────┐
+                        │   Clients   │
+                        └──────┬──────┘
+                               │
+              ┌────────────────┼────────────────┐
+              │                │                │
+              v                v                v
+         8080 (HTTP)      8081 (HTTP)      8082 (HTTP)
+              │                │                │
+        ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+        │   Order     │  │  Product    │  │   Payment   │
+        │   Service   │  │   Service   │  │   Service   │
+        └──────┬──────┘  └──────┬──────┘  └──────┬──────┘
+               │                │                │
+               └────────────────┼────────────────┘
+                                │
+                     ┌──────────┴──────────┐
+                     │                     │
+                     v                     v
+                Kafka Broker        PostgreSQL
+                (Port 9092)       (Multiple Ports)
+                     │                     │
+        ┌────────────┼────────────┐  ┌────┴────────┬───────┐
+        │            │            │  │             │       │
+        v            v            v  v             v       v
+    Topics:     Consumers:      DB:  5432 (order) 5433    5434
+    - order-*   - order-*       ├─ order_db (payment)
+    - product-* - product-*     ├─ product_db
+    - payment-* - payment-*     └─ payment_db
+
+
+================================================================================
+                    COMPLETE STARTUP SEQUENCE
+================================================================================
+
+TIME    STEP                           STATUS
+────────────────────────────────────────────────────────────────
+0s      Start Docker containers
+        - Kafka starts
+        - PostgreSQL instances start
+        └─> Checking health...
+
+10s     Kafka ready ✓
+        PostgreSQL ready ✓
+        All Docker containers healthy
+
+15s     Maven build starts
+        └─> Building services...
+
+20s     Maven build complete ✓
+        Services JAR files ready
+
+25s     Terminal 1: Order Service starts
+        ├─> Load config
+        ├─> Initialize DataSource
+        │   └─> Test connection (Health Check ①) ✓
+        ├─> Initialize Kafka
+        │   └─> Verify broker (Health Check ②) ✓
+        ├─> Register health indicators
+        └─> Service STARTED ✓
+
+26s     Terminal 2: Product Service starts
+        ├─> Load config
+        ├─> Initialize DataSource ✓
+        ├─> Initialize Kafka ✓
+        ├─> Register health indicators
+        └─> Service STARTED ✓
+
+27s     Terminal 3: Payment Service starts
+        ├─> Load config
+        ├─> Initialize DataSource ✓
+        ├─> Initialize Kafka ✓
+        ├─> Register health indicators
+        └─> Service STARTED ✓
+
+30s     All services running
+        Health endpoints ready
+
+30s+    Client requests:
+        curl http://localhost:8080/api/actuator/health
+        └─> All components UP ✓
+            HTTP 200 Response
+
+
+================================================================================
+                          STATUS INDICATORS
+================================================================================
+
+Service Component Status:
+
+Order Service (Port 8080):
+  ├─ db                    [UP  ✓] - Spring default database check
+  ├─ databaseHealth        [UP  ✓] - Custom database connectivity
+  ├─ kafka                 [UP  ✓] - Spring default Kafka check
+  ├─ kafkaHealth           [UP  ✓] - Custom Kafka connectivity
+  ├─ livenessState         [UP  ✓] - Service is running
+  └─ readinessState        [UP  ✓] - Service is ready for traffic
+
+Product Service (Port 8081):
+  ├─ db                    [UP  ✓]
+  ├─ databaseHealth        [UP  ✓]
+  ├─ kafka                 [UP  ✓]
+  ├─ kafkaHealth           [UP  ✓]
+  ├─ livenessState         [UP  ✓]
+  └─ readinessState        [UP  ✓]
+
+Payment Service (Port 8082):
+  ├─ db                    [UP  ✓]
+  ├─ databaseHealth        [UP  ✓]
+  ├─ kafka                 [UP  ✓]
+  ├─ kafkaHealth           [UP  ✓]
+  ├─ livenessState         [UP  ✓]
+  └─ readinessState        [UP  ✓]
+
+Overall Status: [UP ✓] - All components healthy
+
+
+================================================================================
+                            END OF DIAGRAM
+================================================================================
