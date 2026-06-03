@@ -1,5 +1,7 @@
 package com.order.processing.order.exception;
 
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
+import io.github.resilience4j.retry.MaxRetriesExceededException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -15,6 +17,14 @@ import java.util.Map;
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    @ExceptionHandler(OrderNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleOrderNotFound(OrderNotFoundException ex) {
+        log.warn("Order not found: {}", ex.getMessage());
+        return ResponseEntity
+                .status(HttpStatus.NOT_FOUND)
+                .body(buildError(HttpStatus.NOT_FOUND, ex.getMessage()));
+    }
 
     @ExceptionHandler(ProductNotFoundException.class)
     public ResponseEntity<ErrorResponse> handleProductNotFound(ProductNotFoundException ex) {
@@ -38,6 +48,45 @@ public class GlobalExceptionHandler {
         return ResponseEntity
                 .status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(buildError(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage()));
+    }
+
+    /**
+     * Handles Resilience4j {@link CallNotPermittedException}, thrown when the
+     * circuit breaker for {@code productService} is in OPEN state and rejects
+     * the call before it even reaches product-service.
+     *
+     * <p>This handler only fires when the fallback is NOT configured (or if
+     * the exception escapes the fallback). In this project the fallback returns
+     * {@code null} gracefully, so this handler acts as an extra safety net.
+     */
+    @ExceptionHandler(CallNotPermittedException.class)
+    public ResponseEntity<ErrorResponse> handleCircuitBreakerOpen(CallNotPermittedException ex) {
+        log.warn("Circuit breaker OPEN — call rejected for circuit '{}': {}",
+                ex.getCausingCircuitBreakerName(), ex.getMessage());
+        return ResponseEntity
+                .status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(buildError(HttpStatus.SERVICE_UNAVAILABLE,
+                        "Product service is temporarily unavailable (circuit breaker open). " +
+                        "Order data is still accessible without product details."));
+    }
+
+    /**
+     * Safety-net handler for {@link MaxRetriesExceededException}.
+     *
+     * <p>In normal operation this is caught by the retry fallback
+     * ({@code getProductRetryFallback}) and re-wrapped as a
+     * {@link ProductServiceException} before reaching here. This handler
+     * fires only if the exception somehow escapes the fallback chain.
+     */
+    @ExceptionHandler(MaxRetriesExceededException.class)
+    public ResponseEntity<ErrorResponse> handleMaxRetriesExceeded(MaxRetriesExceededException ex) {
+        log.error("All retry attempts exhausted for '{}': {}",
+                ex.getMessage(), ex.getCause() != null ? ex.getCause().getMessage() : "n/a");
+        return ResponseEntity
+                .status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(buildError(HttpStatus.SERVICE_UNAVAILABLE,
+                        "Product service is unavailable after multiple retry attempts. " +
+                        "Please try again later."));
     }
 
     @ExceptionHandler(PaymentServiceException.class)

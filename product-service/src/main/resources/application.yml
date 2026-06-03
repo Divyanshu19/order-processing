@@ -41,6 +41,26 @@ kafka:
     payment-initiated: payment-initiated
     payment-completed: payment-completed
     payment-failed: payment-failed
+  
+  # ── DefaultErrorHandler with FixedBackOff and DeadLetterPublishingRecoverer ─
+  # Production-grade error handling for Kafka consumers.
+  # When a @KafkaListener throws an exception:
+  # 1. Consumer pauses and retries the message with fixed backoff delay
+  # 2. After exhausting max-attempts, message is published to DLT
+  #
+  # Advantages:
+  # - Simpler: No intermediate retry topics created (in-place retries)
+  # - Direct: Explicit error handler configuration at bean level
+  # - Performant: Doesn't generate extra topic messages during retries
+  # - Flexible: Can selectively retry specific exception types
+  # - Standard: Recommended Spring Kafka production pattern
+  error-handler:
+    enabled: true
+    # Total number of attempts (1 original + 2 retries = 3 attempts)
+    max-attempts: 3
+    # Fixed delay between each retry attempt (milliseconds)
+    # Example: 1000ms, then 2000ms, then 3000ms, etc.
+    backoff-delay-ms: 1000
 
 server:
   port: 8081

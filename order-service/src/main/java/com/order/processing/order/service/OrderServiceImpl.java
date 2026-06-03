@@ -3,6 +3,7 @@ package com.order.processing.order.service;
 import com.order.processing.order.client.ProductServiceClient;
 import com.order.processing.order.dto.OrderRequest;
 import com.order.processing.order.dto.OrderResponse;
+import com.order.processing.order.dto.OrderWithProductResponse;
 import com.order.processing.order.dto.ProductResponse;
 import com.order.processing.order.entity.Order;
 import com.order.processing.order.entity.Order.OrderStatus;
@@ -129,6 +130,42 @@ public class OrderServiceImpl implements OrderService {
 
         log.info("Order status updated: orderId={}, {} → {}", orderId, previous, status);
         return toResponse(order);
+    }
+
+    @Override
+    public OrderWithProductResponse getOrderWithProduct(Long orderId) {
+        log.info("Fetching enriched order with product details: orderId={}", orderId);
+
+        // ── Step 1: Load order from DB (throws OrderNotFoundException if absent) ─
+        Order order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new OrderNotFoundException(orderId));
+
+        // ── Step 2: Fetch product via circuit-breaker-protected WebClient call ──
+        // Returns null when the circuit is OPEN or product-service is unreachable.
+        ProductResponse product =
+                productServiceClient.getProductByIdWithCircuitBreaker(order.getProductId());
+
+        boolean productAvailable = product != null;
+        if (productAvailable) {
+            log.info("Product details fetched successfully for productId={}", order.getProductId());
+        } else {
+            log.warn("Product-service unavailable or circuit OPEN for productId={}; " +
+                    "returning order with degraded product info", order.getProductId());
+        }
+
+        // ── Step 3: Build enriched response ────────────────────────────────────
+        return OrderWithProductResponse.builder()
+                .orderId(order.getId())
+                .userId(order.getUserId())
+                .productId(order.getProductId())
+                .quantity(order.getQuantity())
+                .totalPrice(order.getTotalPrice())
+                .paymentMethod(order.getPaymentMethod())
+                .status(order.getStatus())
+                .createdAt(order.getCreatedAt())
+                .product(product)
+                .productServiceAvailable(productAvailable)
+                .build();
     }
 
     private OrderResponse toResponse(Order order) {

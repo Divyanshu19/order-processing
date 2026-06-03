@@ -41,6 +41,26 @@ kafka:
     payment-initiated: payment-initiated
     payment-completed: payment-completed
     payment-failed: payment-failed
+  
+  # ── DefaultErrorHandler with FixedBackOff and DeadLetterPublishingRecoverer ─
+  # Production-grade error handling for Kafka consumers.
+  # When a @KafkaListener throws an exception:
+  # 1. Consumer pauses and retries the message with fixed backoff delay
+  # 2. After exhausting max-attempts, message is published to DLT
+  #
+  # Advantages:
+  # - Simpler: No intermediate retry topics created (in-place retries)
+  # - Direct: Explicit error handler configuration at bean level
+  # - Performant: Doesn't generate extra topic messages during retries
+  # - Flexible: Can selectively retry specific exception types
+  # - Standard: Recommended Spring Kafka production pattern
+  error-handler:
+    enabled: true
+    # Total number of attempts (1 original + 2 retries = 3 attempts)
+    max-attempts: 3
+    # Fixed delay between each retry attempt (milliseconds)
+    # Example: 1000ms, then 2000ms, then 3000ms, etc.
+    backoff-delay-ms: 1000
 
 server:
   port: 8080
@@ -57,14 +77,18 @@ logging:
   level:
     root: INFO
     com.order.processing: DEBUG
+    # Show all CB + Retry log lines from our custom listener (including DEBUG success/ignored)
+    com.order.processing.order.config.ResilienceEventLoggerConfig: DEBUG
+    # Suppress Resilience4j's own internal verbose output — our listeners handle it
+    io.github.resilience4j: WARN
   pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%-5level] %logger{36} - %msg%n"
 
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health,info,metrics,circuitbreakers,circuitbreakerevents,retryevents
   endpoint:
     health:
       show-details: always
@@ -77,4 +101,50 @@ management:
       enabled: true
     readinessState:
       enabled: true
+    circuitbreakers:
+      enabled: true
+
+# ── Resilience4j Circuit Breaker Configuration ───────────────────────────────
+resilience4j:
+  circuitbreaker:
+    instances:
+      productService:
+        # Sliding window: evaluate the last 10 calls to decide CB state
+        sliding-window-size: 10
+        # Open the circuit if ≥50% of calls in the window fail
+        failure-rate-threshold: 50
+        # Keep circuit OPEN for 10 s before allowing a probe call (HALF-OPEN)
+        wait-duration-in-open-state: 10s
+        # Allow 3 probe calls in HALF-OPEN; if they succeed → back to CLOSED
+        permitted-number-of-calls-in-half-open-state: 3
+        # Minimum calls before failure-rate is evaluated (avoids false trips on startup)
+        minimum-number-of-calls: 5
+        # Automatically move from OPEN → HALF-OPEN after waitDurationInOpenState
+        automatic-transition-from-open-to-half-open-enabled: true
+        # ProductNotFoundException is a 404 business error — NOT a downstream failure.
+        # Rethrow it without counting it against the circuit breaker's failure rate.
+        ignore-exceptions:
+          - com.order.processing.order.exception.ProductNotFoundException
+        # Expose circuit breaker state via /actuator/health
+        register-health-indicator: true
+
+  retry:
+    instances:
+      productService:
+        # Total number of attempts (1 original + 2 retries)
+        max-attempts: 3
+        # Initial wait between attempts: 500 ms
+        wait-duration: 500ms
+        # Exponential backoff: attempt 1→500ms, attempt 2→1000ms, attempt 3→2000ms (capped)
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2.0
+        # Hard cap so retries never exceed 2 s even if multiplier grows large
+        exponential-max-wait-duration: 2s
+        # Only retry on transient downstream failures — network errors, 5xx, timeouts.
+        # ProductServiceException is thrown for all such cases in ProductServiceClient.
+        retry-exceptions:
+          - com.order.processing.order.exception.ProductServiceException
+        # ProductNotFoundException is a definitive 404 — retrying will not help.
+        ignore-exceptions:
+          - com.order.processing.order.exception.ProductNotFoundException
 

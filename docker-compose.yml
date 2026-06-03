@@ -110,29 +110,31 @@ services:
 
   # ── API Gateway ─────────────────────────────────────────────────────────────
   #
-  # Runs the pre-built gateway-service JAR inside a plain OpenJDK image.
-  # Build the JAR first:
-  #   mvn -pl gateway-service package -DskipTests
+  # Built from gateway-service/Dockerfile (multi-stage: Maven build → JRE runtime).
+  # No pre-built JAR or host volume mount required.
   #
-  # Downstream services (product / order / payment) are typically started as
-  # local JVM processes.  Inside Docker, reach them via host.docker.internal
-  # (Docker Desktop) or 172.17.0.1 (Linux Docker bridge).
+  # First run builds the image automatically.
+  # To force a rebuild after code changes:
+  #   docker compose build gateway-service
+  #   docker compose up -d gateway-service
+  #
+  # Downstream services (product / order / payment) run as local JVM processes.
+  # Inside Docker they are reachable via host.docker.internal (Docker Desktop)
+  # or 172.17.0.1 (Linux Docker bridge).
   gateway-service:
-    image: eclipse-temurin:17-jre
+    build:
+      context: .                          # repo root — Dockerfile needs parent pom.xml
+      dockerfile: gateway-service/Dockerfile
     container_name: gateway-service
-    working_dir: /app
-    volumes:
-      - ./gateway-service/target/gateway-service-0.0.1-SNAPSHOT.jar:/app/gateway-service.jar
-    command: java -jar /app/gateway-service.jar
     ports:
       - "8079:8079"
     environment:
-      SPRING_CLOUD_GATEWAY_ROUTES_0_URI: http://host.docker.internal:8081   # product-service
-      SPRING_CLOUD_GATEWAY_ROUTES_1_URI: http://host.docker.internal:8080   # order-service
-      SPRING_CLOUD_GATEWAY_ROUTES_2_URI: http://host.docker.internal:8082   # payment-service
+      # Activate the 'docker' Spring profile.
+      # application-docker.yml (inside the built image) overrides only:
+      #   - route URIs  →  host.docker.internal (downstream services on the host)
+      #   - Redis host  →  the 'redis' Docker service
+      SPRING_PROFILES_ACTIVE: docker
       SERVER_PORT: 8079
-      SPRING_DATA_REDIS_HOST: redis          # Redis container hostname
-      SPRING_DATA_REDIS_PORT: 6379
     networks:
       - order-processing-network
     healthcheck:
@@ -140,7 +142,7 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 20s
+      start_period: 40s                   # extra time for JVM cold-start after build
     depends_on:
       kafka:
         condition: service_healthy
