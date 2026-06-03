@@ -1,0 +1,89 @@
+# =============================================================================
+# application-docker.yml  —  Spring profile: docker
+#
+# Activated when SPRING_PROFILES_ACTIVE=docker (set in docker-compose.yml).
+# Overrides ONLY the values that differ between local dev and Docker:
+#
+#   1. Route URIs   — localhost → host.docker.internal
+#                     (downstream services run on the host, not inside Docker)
+#   2. Redis host   — localhost → redis  (the Docker Compose service name)
+#
+# Everything else (predicates, filters, ports, logging, CORS, timeouts) is
+# inherited unchanged from application.yml.
+# =============================================================================
+
+spring:
+  data:
+    redis:
+      host: redis          # Docker Compose service name for the Redis container
+      port: 6379
+
+  cloud:
+    gateway:
+      routes:
+        # ── 1. Product Service ───────────────────────────────────────────────
+        - id: product-route
+          uri: http://host.docker.internal:8081
+          predicates:
+            - Path=/product/**
+          filters:
+            - RewritePath=/product/(?<segment>.+), /api/products/${segment}
+            - RewritePath=^/product/?$, /api/products
+            - AddRequestHeader=X-Gateway-Source, gateway-service
+            - AddResponseHeader=X-Served-By, product-service
+            - name: Retry
+              args:
+                retries: 3
+                series: SERVER_ERROR
+                methods: GET,HEAD
+                backoff:
+                  firstBackoff: 50ms
+                  maxBackoff: 500ms
+                  factor: 2
+                  basedOnPreviousValue: false
+          metadata:
+            response-timeout: 5000
+            connect-timeout: 2000
+
+        # ── 2. Order Service ─────────────────────────────────────────────────
+        - id: order-route
+          uri: http://host.docker.internal:8080
+          predicates:
+            - Path=/order/**
+          filters:
+            - RewritePath=/order/(?<segment>.+), /api/orders/${segment}
+            - RewritePath=^/order/?$, /api/orders
+            - AddRequestHeader=X-Gateway-Source, gateway-service
+            - AddResponseHeader=X-Served-By, order-service
+            - name: Retry
+              args:
+                retries: 3
+                series: SERVER_ERROR
+                methods: GET,HEAD
+                backoff:
+                  firstBackoff: 50ms
+                  maxBackoff: 500ms
+                  factor: 2
+                  basedOnPreviousValue: false
+          metadata:
+            response-timeout: 5000
+            connect-timeout: 2000
+
+        # ── 3. Payment Service ───────────────────────────────────────────────
+        - id: payment-route
+          uri: http://host.docker.internal:8082
+          predicates:
+            - Path=/payment/**
+          filters:
+            - RewritePath=/payment/(?<segment>.+), /api/payments/${segment}
+            - RewritePath=^/payment/?$, /api/payments
+            - AddRequestHeader=X-Gateway-Source, gateway-service
+            - AddResponseHeader=X-Served-By, payment-service
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 50
+                redis-rate-limiter.burstCapacity: 100
+                redis-rate-limiter.requestedTokens: 1
+          metadata:
+            response-timeout: 10000
+            connect-timeout: 2000
