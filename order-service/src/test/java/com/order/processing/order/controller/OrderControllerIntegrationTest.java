@@ -23,6 +23,8 @@ import org.springframework.web.client.RestTemplate;
 
 import java.math.BigDecimal;
 
+import com.order.processing.order.security.WithMockOrderUser;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.notNullValue;
@@ -48,8 +50,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *   <li>Each test asserts both the HTTP response AND the DB state via
  *       {@link OrderRepository}.</li>
  * </ul>
+ *
+ * <p>{@link WithMockOrderUser} injects an {@link com.order.processing.order.security.AuthenticatedUser}
+ * principal (userId=42) into the Spring Security context, matching exactly what
+ * {@link com.order.processing.order.security.JwtAuthFilter} does at runtime.
+ * {@code userId} is no longer accepted in the request body — the controller
+ * reads it exclusively from the authenticated principal.
  */
 @AutoConfigureMockMvc
+@WithMockOrderUser(userId = 42L, username = "test-user")
 @DisplayName("OrderController — End-to-End Integration Tests")
 class OrderControllerIntegrationTest extends AbstractIntegrationTest {
 
@@ -160,8 +169,8 @@ class OrderControllerIntegrationTest extends AbstractIntegrationTest {
     // =========================================================================
 
     private OrderRequest validRequest() {
+        // userId intentionally absent — it is sourced from @AuthenticationPrincipal
         return OrderRequest.builder()
-                .userId(42L)
                 .productId(1L)
                 .quantity(3)
                 .paymentMethod("CREDIT_CARD")
@@ -304,7 +313,7 @@ class OrderControllerIntegrationTest extends AbstractIntegrationTest {
                     .andRespond(withSuccess(PRODUCT_LOW_STOCK_JSON, MediaType.APPLICATION_JSON));
 
             OrderRequest request = OrderRequest.builder()
-                    .userId(42L).productId(1L).quantity(5).paymentMethod("CREDIT_CARD")
+                    .productId(1L).quantity(5).paymentMethod("CREDIT_CARD")
                     .build();
 
             mockMvc.perform(post("/orders")
@@ -327,7 +336,7 @@ class OrderControllerIntegrationTest extends AbstractIntegrationTest {
                     .andRespond(withSuccess(PRODUCT_LOW_STOCK_JSON, MediaType.APPLICATION_JSON));
 
             OrderRequest request = OrderRequest.builder()
-                    .userId(42L).productId(1L).quantity(5).paymentMethod("CREDIT_CARD")
+                    .productId(1L).quantity(5).paymentMethod("CREDIT_CARD")
                     .build();
 
             mockMvc.perform(post("/orders")
@@ -520,7 +529,7 @@ class OrderControllerIntegrationTest extends AbstractIntegrationTest {
                             .body("{\"message\":\"Product not found with id: 99\"}"));
 
             OrderRequest request = OrderRequest.builder()
-                    .userId(42L).productId(99L).quantity(1).paymentMethod("CREDIT_CARD")
+                    .productId(99L).quantity(1).paymentMethod("CREDIT_CARD")
                     .build();
 
             mockMvc.perform(post("/orders")
@@ -543,24 +552,47 @@ class OrderControllerIntegrationTest extends AbstractIntegrationTest {
     class InputValidation {
 
         @Test
-        @DisplayName("returns 400 when userId is null")
-        void placeOrder_nullUserId_returns400() throws Exception {
-            OrderRequest request = OrderRequest.builder()
-                    .userId(null).productId(1L).quantity(1).paymentMethod("CREDIT_CARD")
-                    .build();
+        @DisplayName("userId in request body is ignored — order is always created with JWT userId")
+        @WithMockOrderUser(userId = 99L, username = "impersonator")
+        void placeOrder_userIdInBody_isIgnored_jwtUserIdUsedInstead() throws Exception {
+            // Register product-service stub for this test
+            MockRestServiceServer localServer =
+                    MockRestServiceServer.createServer(restTemplate);
+            localServer.expect(requestTo(productBaseUrl + "/products/1"))
+                    .andExpect(method(HttpMethod.GET))
+                    .andRespond(withSuccess(PRODUCT_IN_STOCK_JSON, MediaType.APPLICATION_JSON));
+            localServer.expect(requestTo(productBaseUrl + "/products/1/stock"))
+                    .andExpect(method(HttpMethod.PUT))
+                    .andRespond(withSuccess(STOCK_REDUCED_JSON, MediaType.APPLICATION_JSON));
+            localServer.expect(requestTo(paymentBaseUrl + "/payments"))
+                    .andExpect(method(HttpMethod.POST))
+                    .andRespond(withSuccess(PAYMENT_SUCCESS_JSON, MediaType.APPLICATION_JSON));
+
+            // Even if a malicious client injects a different userId in the body, the
+            // order must be created with the userId from the JWT (99L in this test).
+            String bodyWithFakeUserId =
+                    "{\"userId\":1,\"productId\":1,\"quantity\":3,\"paymentMethod\":\"CREDIT_CARD\"}";
 
             mockMvc.perform(post("/orders")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(objectMapper.writeValueAsString(request)))
-                    .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.fieldErrors.userId").value("userId is required"));
+                            .content(bodyWithFakeUserId))
+                    .andExpect(status().isCreated())
+                    // The userId in the response must come from the JWT, not the body
+                    .andExpect(jsonPath("$.userId").value(99));
+
+            Order saved = orderRepository.findAll().get(0);
+            assertThat(saved.getUserId())
+                    .as("userId must be sourced from JWT, not from request body")
+                    .isEqualTo(99L);
+
+            localServer.verify();
         }
 
         @Test
         @DisplayName("returns 400 when productId is null")
         void placeOrder_nullProductId_returns400() throws Exception {
             OrderRequest request = OrderRequest.builder()
-                    .userId(1L).productId(null).quantity(1).paymentMethod("CREDIT_CARD")
+                    .productId(null).quantity(1).paymentMethod("CREDIT_CARD")
                     .build();
 
             mockMvc.perform(post("/orders")
@@ -574,7 +606,7 @@ class OrderControllerIntegrationTest extends AbstractIntegrationTest {
         @DisplayName("returns 400 when quantity is zero")
         void placeOrder_zeroQuantity_returns400() throws Exception {
             OrderRequest request = OrderRequest.builder()
-                    .userId(1L).productId(1L).quantity(0).paymentMethod("CREDIT_CARD")
+                    .productId(1L).quantity(0).paymentMethod("CREDIT_CARD")
                     .build();
 
             mockMvc.perform(post("/orders")
@@ -589,7 +621,7 @@ class OrderControllerIntegrationTest extends AbstractIntegrationTest {
         @DisplayName("returns 400 when paymentMethod is blank")
         void placeOrder_blankPaymentMethod_returns400() throws Exception {
             OrderRequest request = OrderRequest.builder()
-                    .userId(1L).productId(1L).quantity(2).paymentMethod("")
+                    .productId(1L).quantity(2).paymentMethod("")
                     .build();
 
             mockMvc.perform(post("/orders")

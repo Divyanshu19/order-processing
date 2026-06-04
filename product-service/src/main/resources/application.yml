@@ -28,10 +28,24 @@ spring:
       bootstrap-servers: localhost:9092
       group-id: product-service-group
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      # ErrorHandlingDeserializer wraps JsonDeserializer so that a bad/missing
+      # __TypeId__ header causes a recoverable DeserializationException instead
+      # of crashing the listener container thread.
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       properties:
         spring.json.trusted.packages: "*"
+        # The real deserializer that ErrorHandlingDeserializer delegates to
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        # Default target type when no __TypeId__ header is present.
+        # order-service publishes with spring.json.add.type.headers=false,
+        # so this tells JsonDeserializer which class to deserialize into.
+        spring.json.value.default.type: com.order.processing.product.event.OrderPlacedEvent
       auto-offset-reset: earliest
+
+# ── JWT ── must match auth-service and gateway-service ───────────────────────
+# Override with JWT_SECRET env-var in production / Docker.
+jwt:
+  secret: "${JWT_SECRET:order-processing-default-dev-secret-key-must-be-32chars}"
 
 kafka:
   topics:

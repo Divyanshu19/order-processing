@@ -54,8 +54,13 @@ public interface OrderService {
      * (stock reservation → payment → confirmation) is driven asynchronously
      * by subsequent Kafka events.
      *
-     * @param request the incoming order request (userId, productId, quantity, paymentMethod)
+     * <p><strong>Security</strong>: {@code userId} is passed in separately from the
+     * controller, where it was extracted from {@code @AuthenticationPrincipal}.
+     * It is NEVER read from the request body.
+     *
+     * @param userId  the authenticated user's database ID, sourced from JWT {@code uid} claim
+     * @param request the incoming order request (productId, quantity, paymentMethod)
      * @return the persisted order with status {@code PENDING}
      */
-    OrderResponse createOrder(OrderRequest request);
+    OrderResponse createOrder(Long userId, OrderRequest request);
 }

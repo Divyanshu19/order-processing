@@ -108,6 +108,32 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── Auth Service ─────────────────────────────────────────────────────────────
+  #
+  # Minimal JWT issuer.  POST /auth/login → signed HS256 token.
+  # The same JWT_SECRET must be set on gateway-service so it can verify tokens.
+  #
+  auth-service:
+    build:
+      context: .
+      dockerfile: auth-service/Dockerfile
+    container_name: auth-service
+    ports:
+      - "8083:8083"
+    environment:
+      SERVER_PORT: 8083
+      # Share this secret with gateway-service.
+      # Override in production with a strong randomly-generated value.
+      JWT_SECRET: "${JWT_SECRET:-order-processing-default-dev-secret-key-must-be-32chars}"
+    networks:
+      - order-processing-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   # ── API Gateway ─────────────────────────────────────────────────────────────
   #
   # Built from gateway-service/Dockerfile (multi-stage: Maven build → JRE runtime).
@@ -135,6 +161,8 @@ services:
       #   - Redis host  →  the 'redis' Docker service
       SPRING_PROFILES_ACTIVE: docker
       SERVER_PORT: 8079
+      # Must match auth-service JWT_SECRET so token validation works
+      JWT_SECRET: "${JWT_SECRET:-order-processing-default-dev-secret-key-must-be-32chars}"
     networks:
       - order-processing-network
     healthcheck:
@@ -147,6 +175,8 @@ services:
       kafka:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      auth-service:
         condition: service_healthy
 
 volumes:

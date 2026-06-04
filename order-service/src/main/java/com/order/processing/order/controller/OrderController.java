@@ -3,12 +3,14 @@ package com.order.processing.order.controller;
 import com.order.processing.order.dto.OrderRequest;
 import com.order.processing.order.dto.OrderResponse;
 import com.order.processing.order.dto.OrderWithProductResponse;
+import com.order.processing.order.security.AuthenticatedUser;
 import com.order.processing.order.service.OrderService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -26,17 +28,28 @@ public class OrderController {
 
     /**
      * POST /api/orders
-     * Places a new order. Validates input, calls the product-service to verify
-     * the product and check stock, then persists and returns the created order.
      *
-     * @param request body containing userId, productId, and quantity
-     * @return 201 Created with the persisted OrderResponse
+     * <p>Places a new order on behalf of the authenticated user.
+     *
+     * <p><strong>Security</strong>: {@code userId} is NOT read from the request body.
+     * It is extracted from the verified JWT {@code uid} claim via
+     * {@code @AuthenticationPrincipal}, making it impossible for a caller to
+     * create orders on behalf of another user.
+     *
+     * @param authenticatedUser principal populated by {@link com.order.processing.order.security.JwtAuthFilter}
+     * @param request           body containing productId, quantity, and paymentMethod
+     * @return 201 Created with the persisted {@link OrderResponse}
      */
     @PostMapping
-    public ResponseEntity<OrderResponse> createOrder(@Valid @RequestBody OrderRequest request) {
-        log.info("POST /orders - userId={}, productId={}, quantity={}",
-                request.getUserId(), request.getProductId(), request.getQuantity());
-        OrderResponse response = orderService.createOrder(request);
+    public ResponseEntity<OrderResponse> createOrder(
+            @AuthenticationPrincipal AuthenticatedUser authenticatedUser,
+            @Valid @RequestBody OrderRequest request) {
+
+        Long userId = authenticatedUser.userId();
+        log.info("POST /orders - userId={} (from JWT), productId={}, quantity={}",
+                userId, request.getProductId(), request.getQuantity());
+
+        OrderResponse response = orderService.createOrder(userId, request);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 

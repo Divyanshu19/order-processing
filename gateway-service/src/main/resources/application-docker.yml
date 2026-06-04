@@ -12,6 +12,9 @@
 # inherited unchanged from application.yml.
 # =============================================================================
 
+jwt:
+  secret: "${JWT_SECRET:order-processing-default-dev-secret-key-must-be-32chars}"
+
 spring:
   data:
     redis:
@@ -21,6 +24,18 @@ spring:
   cloud:
     gateway:
       routes:
+        # ── 0. Auth Service (public – no JWT required) ───────────────────────
+        - id: auth-route
+          uri: http://auth-service:8083
+          predicates:
+            - Path=/auth/**
+          filters:
+            - AddRequestHeader=X-Gateway-Source, gateway-service
+            - AddResponseHeader=X-Served-By, auth-service
+          metadata:
+            response-timeout: 5000
+            connect-timeout: 2000
+
         # ── 1. Product Service ───────────────────────────────────────────────
         - id: product-route
           uri: http://host.docker.internal:8081

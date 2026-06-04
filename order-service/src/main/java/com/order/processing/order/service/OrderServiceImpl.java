@@ -57,9 +57,9 @@ public class OrderServiceImpl implements OrderService {
      * a round-trip through the entire async saga for trivially invalid requests.
      */
     @Override
-    public OrderResponse createOrder(OrderRequest request) {
-        log.info("Received order request: userId={}, productId={}, quantity={}",
-                request.getUserId(), request.getProductId(), request.getQuantity());
+    public OrderResponse createOrder(Long userId, OrderRequest request) {
+        log.info("Received order request: userId={} (from JWT), productId={}, quantity={}",
+                userId, request.getProductId(), request.getQuantity());
 
         // ── Step 1: Fetch product — validate existence and get unit price ──────
         ProductResponse product = productServiceClient.getProductById(request.getProductId());
@@ -81,8 +81,9 @@ public class OrderServiceImpl implements OrderService {
                 totalPrice, product.getPrice(), request.getQuantity());
 
         // ── Step 4: Persist order with status PENDING ─────────────────────────
+        // userId comes from the verified JWT uid claim — never from the request body
         Order order = Order.builder()
-                .userId(request.getUserId())
+                .userId(userId)
                 .productId(request.getProductId())
                 .quantity(request.getQuantity())
                 .totalPrice(totalPrice)

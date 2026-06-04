@@ -17,6 +17,8 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.math.BigDecimal;
 
+import org.springframework.security.test.context.support.WithMockUser;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -32,8 +34,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <p>Test isolation strategy: {@link BeforeEach} truncates the {@code products}
  * table so every test starts with a clean slate.
+ *
+ * <p>{@link WithMockUser} injects a pre-authenticated Spring Security principal
+ * so that Spring Security permits the request without a real JWT.  The actual
+ * JWT parsing logic is exercised by dedicated unit tests in
+ * {@code JwtAuthFilterTest}.
  */
 @AutoConfigureMockMvc
+@WithMockUser(username = "test-user", roles = {"USER"})
 @DisplayName("ProductController — Integration Tests")
 class ProductControllerIntegrationTest extends AbstractIntegrationTest {
 

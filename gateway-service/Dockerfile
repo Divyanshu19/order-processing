@@ -33,6 +33,7 @@ COPY pom.xml ./pom.xml
 COPY order-service/pom.xml    ./order-service/pom.xml
 COPY product-service/pom.xml  ./product-service/pom.xml
 COPY payment-service/pom.xml  ./payment-service/pom.xml
+COPY auth-service/pom.xml     ./auth-service/pom.xml
 
 # Gateway-service: full pom + source (this is what we actually build)
 COPY gateway-service/pom.xml  ./gateway-service/pom.xml

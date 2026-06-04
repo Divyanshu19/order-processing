@@ -2,6 +2,12 @@ spring:
   application:
     name: gateway-service
 
+# ── JWT ───────────────────────────────────────────────────────────────────────
+# Must match the secret configured in auth-service.
+# Override with JWT_SECRET env-var in production / Docker.
+jwt:
+  secret: "${JWT_SECRET:order-processing-default-dev-secret-key-must-be-32chars}"
+
   # ── Redis (required by RequestRateLimiter on the payment route) ───────────
   data:
     redis:
@@ -34,6 +40,18 @@ spring:
       #   GET  :8079/payment/history     →  GET  :8082/api/payments/history
       # ─────────────────────────────────────────────────────────────────────
       routes:
+
+        # ── 0. Auth Service (public – no JWT required) ──────────────────────
+        - id: auth-route
+          uri: http://localhost:8083
+          predicates:
+            - Path=/auth/**
+          filters:
+            - AddRequestHeader=X-Gateway-Source, gateway-service
+            - AddResponseHeader=X-Served-By, auth-service
+          metadata:
+            response-timeout: 5000
+            connect-timeout: 2000
 
         # ── 1. Product Service ──────────────────────────────────────────────
         - id: product-route

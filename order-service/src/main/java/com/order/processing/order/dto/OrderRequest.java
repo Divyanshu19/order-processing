@@ -8,14 +8,21 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+/**
+ * Inbound payload for {@code POST /orders}.
+ *
+ * <p><strong>Security note</strong>: {@code userId} is intentionally absent.
+ * The user's identity is extracted from the verified JWT {@code uid} claim by
+ * {@link com.order.processing.order.security.JwtAuthFilter} and injected into
+ * the controller via {@code @AuthenticationPrincipal}.  Accepting a
+ * client-supplied {@code userId} in the body would allow any authenticated user
+ * to place orders on behalf of any other user.
+ */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
 public class OrderRequest {
-
-    @NotNull(message = "userId is required")
-    private Long userId;
 
     @NotNull(message = "productId is required")
     private Long productId;

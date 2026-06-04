@@ -33,14 +33,14 @@ class GatewayServiceApplicationTests {
     }
 
     @Test
-    void allThreeRoutesAreRegistered() {
+    void allFourRoutesAreRegistered() {
         List<String> routeIds = routeLocator.getRoutes()
                 .map(route -> route.getId())
                 .collectList()
                 .block();
 
         assertThat(routeIds)
-                .as("All three core routes must be present")
-                .contains("product-route", "order-route", "payment-route");
+                .as("All four routes (auth + three services) must be present")
+                .contains("auth-route", "product-route", "order-route", "payment-route");
     }
 }

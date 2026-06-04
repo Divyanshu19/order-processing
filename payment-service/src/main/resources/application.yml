@@ -33,6 +33,11 @@ spring:
         spring.json.trusted.packages: "*"
       auto-offset-reset: earliest
 
+# ── JWT ── must match auth-service and gateway-service ───────────────────────
+# Override with JWT_SECRET env-var in production / Docker.
+jwt:
+  secret: "${JWT_SECRET:order-processing-default-dev-secret-key-must-be-32chars}"
+
 kafka:
   topics:
     order-placed: order-placed

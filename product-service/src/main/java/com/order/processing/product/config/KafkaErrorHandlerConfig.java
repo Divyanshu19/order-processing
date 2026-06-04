@@ -9,6 +9,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
+import org.springframework.kafka.support.serializer.DeserializationException;
 import org.springframework.util.backoff.FixedBackOff;
 
 /**
@@ -115,6 +116,11 @@ public class KafkaErrorHandlerConfig {
 
         // Create the error handler with fixed backoff and DLT recovery
         DefaultErrorHandler errorHandler = new DefaultErrorHandler(deadLetterRecoverer, fixedBackOff);
+
+        // DeserializationException cannot be retried — the bytes are already corrupted or the
+        // wrong type. Skip retries entirely and route straight to the DLT so the consumer
+        // is not stuck in an infinite error loop replaying the same unreadable message.
+        errorHandler.addNotRetryableExceptions(DeserializationException.class);
 
         return errorHandler;
     }

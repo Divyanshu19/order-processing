@@ -8,6 +8,11 @@ spring:
       # Minimal route set – identical IDs as production so route-presence tests pass.
       # URIs point to localhost stubs (no real services needed for context-load tests).
       routes:
+        - id: auth-route
+          uri: http://localhost:8083
+          predicates:
+            - Path=/auth/**
+
         - id: product-route
           uri: http://localhost:8081
           predicates:
@@ -28,6 +33,10 @@ spring:
             - Path=/payment/**
           filters:
             - RewritePath=/payment/(?<segment>.*), /api/payments/${segment}
+
+# ── JWT — must be present so JwtTokenValidator initialises in tests ──────────
+jwt:
+  secret: "test-secret-key-only-for-unit-tests-min32chars"
 
 server:
   port: 0   # random port – avoids conflicts in CI
