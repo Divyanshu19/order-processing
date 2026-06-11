@@ -1,0 +1,87 @@
+spring:
+  application:
+    name: auth-service
+
+# ── Server ────────────────────────────────────────────────────────────────────
+server:
+  port: 8090                          # auth-service listens here
+                                      # away from 8079 (gateway), 8080-8082 (services)
+
+# ── JWT ───────────────────────────────────────────────────────────────────────
+jwt:
+  # IMPORTANT: replace this default with a strong, randomly-generated 32+ char
+  # secret in production.  Use the JWT_SECRET environment variable or a secrets
+  # manager – never commit real secrets to version control.
+  secret: "${JWT_SECRET:order-processing-default-dev-secret-key-must-be-32chars}"
+  expiration-ms: 3600000              # 1 hour
+
+# ── Actuator (/management/**) ─────────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      base-path: /management
+      exposure:
+        include: health,info,metrics,prometheus
+
+  endpoint:
+    health:
+      show-details: always
+      group:
+        live:
+          include: livenessState,ping
+          show-details: never
+        ready:
+          include: readinessState,diskSpace
+          show-details: always
+    info:
+      enabled: true
+    prometheus:
+      enabled: true
+
+  health:
+    diskSpace:
+      enabled: true
+    livenessState:
+      enabled: true
+    readinessState:
+      enabled: true
+
+  info:
+    env:
+      enabled: true
+    java:
+      enabled: true
+    os:
+      enabled: true
+    build:
+      enabled: true
+
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+  # ── Distributed Tracing ────────────────────────────────────────────────────
+  tracing:
+    sampling:
+      probability: 1.0
+  # ── Zipkin span exporter (Spring Boot 3.x / Micrometer Tracing) ────────────
+  zipkin:
+    tracing:
+      endpoint: ${ZIPKIN_BASE_URL:http://localhost:9411}/api/v2/spans
+
+info:
+  app:
+    name: ${spring.application.name}
+    description: "JWT issuer — POST /auth/login returns a signed HS256 token"
+    version: "@project.version@"
+  contact:
+    team: "Platform Engineering"
+    docs: "https://github.com/your-org/order-processing#readme"
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+# Log levels only — format/pattern is fully controlled by logback-spring.xml.
+# Do NOT define logging.pattern.console here; it would override LogstashEncoder.
+logging:
+  level:
+    root: INFO
+    com.order.processing.auth: DEBUG

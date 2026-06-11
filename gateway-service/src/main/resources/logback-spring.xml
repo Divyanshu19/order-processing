@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Logback configuration for gateway-service.
+
+  The gateway runs on the Reactive stack (Netty / Project Reactor), not the
+  servlet stack, so thread names look like "reactor-http-nio-1" rather than
+  "http-nio-8079-exec-1". The logging configuration is otherwise identical to
+  the other services.
+
+  Two appenders selected by Spring profile:
+    default / dev  → CONSOLE_TEXT  (human-readable, easy to grep locally)
+    json / prod    → CONSOLE_JSON  (LogstashEncoder, one JSON object per line)
+
+  Every log line automatically includes:
+    • traceId  — populated by micrometer-tracing-bridge-brave
+    • spanId   — populated by micrometer-tracing-bridge-brave
+    • service  — "gateway-service" (from spring.application.name)
+
+  JSON output example:
+  {
+    "@timestamp": "2024-05-01T12:34:56.789Z",
+    "level":      "INFO",
+    "logger":     "c.o.p.gateway.filter.LoggingGlobalFilter",
+    "message":    "[GATEWAY] → GET /order/1 | client=127.0.0.1",
+    "service":    "gateway-service",
+    "traceId":    "4bf92f3577b34da6a3ce929d0e0e4736",
+    "spanId":     "00f067aa0ba902b7"
+  }
+-->
+<configuration>
+
+    <!-- ── Service identity — must stay global so both profiles can reference it -->
+    <springProperty name="SERVICE_NAME" source="spring.application.name" defaultValue="gateway-service"/>
+
+    <!-- ── Profile: default / dev / test — human-readable text ──────────── -->
+    <springProfile name="default | dev | test">
+        <appender name="CONSOLE_TEXT" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [${SERVICE_NAME},%mdc{traceId:--},%mdc{spanId:--}] %logger{36} - %msg%n%ex</pattern>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_TEXT"/>
+        </root>
+        <logger name="com.order.processing" level="DEBUG"/>
+        <!-- Keep gateway route-matching logs at DEBUG locally for tracing misroutes -->
+        <logger name="org.springframework.cloud.gateway" level="DEBUG"/>
+        <!-- Netty transport is too noisy at DEBUG; INFO is enough -->
+        <logger name="reactor.netty" level="INFO"/>
+    </springProfile>
+
+    <!-- ── Profile: json / prod — structured JSON for log aggregation ────── -->
+    <springProfile name="json | prod">
+        <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <fieldNames>
+                    <message>message</message>
+                    <levelValue>[ignore]</levelValue>
+                </fieldNames>
+                <customFields>{"service":"${SERVICE_NAME}"}</customFields>
+                <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+                    <maxDepthPerCause>30</maxDepthPerCause>
+                    <rootCauseFirst>true</rootCauseFirst>
+                </throwableConverter>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_JSON"/>
+        </root>
+        <logger name="com.order.processing" level="DEBUG"/>
+        <!-- In production JSON mode keep gateway internals at WARN to reduce noise -->
+        <logger name="org.springframework.cloud.gateway" level="WARN"/>
+        <logger name="reactor.netty" level="WARN"/>
+    </springProfile>
+
+</configuration>

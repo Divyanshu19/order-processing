@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Logback configuration for product-service.
+
+  Two appenders selected by Spring profile:
+    default / dev  → CONSOLE_TEXT  (human-readable, easy to grep locally)
+    json / prod    → CONSOLE_JSON  (LogstashEncoder, one JSON object per line)
+
+  Every log line automatically includes:
+    • traceId  — populated by micrometer-tracing-bridge-brave
+    • spanId   — populated by micrometer-tracing-bridge-brave
+    • service  — "product-service" (from spring.application.name)
+
+  JSON output example:
+  {
+    "@timestamp": "2024-05-01T12:34:56.789Z",
+    "level":      "WARN",
+    "logger":     "c.o.p.product.event.OrderPlacedEventListener",
+    "message":    "[SAGA] Reservation failed — insufficient stock: orderId=42",
+    "service":    "product-service",
+    "traceId":    "4bf92f3577b34da6a3ce929d0e0e4736",
+    "spanId":     "00f067aa0ba902b7"
+  }
+-->
+<configuration>
+
+    <!-- ── Service identity — must stay global so both profiles can reference it -->
+    <springProperty name="SERVICE_NAME" source="spring.application.name" defaultValue="product-service"/>
+
+    <!-- ── Profile: default / dev / test — human-readable text ──────────── -->
+    <springProfile name="default | dev | test">
+        <appender name="CONSOLE_TEXT" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [${SERVICE_NAME},%mdc{traceId:--},%mdc{spanId:--}] %logger{36} - %msg%n%ex</pattern>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_TEXT"/>
+        </root>
+        <logger name="com.order.processing" level="DEBUG"/>
+    </springProfile>
+
+    <!-- ── Profile: json / prod — structured JSON for log aggregation ────── -->
+    <springProfile name="json | prod">
+        <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <fieldNames>
+                    <message>message</message>
+                    <levelValue>[ignore]</levelValue>
+                </fieldNames>
+                <customFields>{"service":"${SERVICE_NAME}"}</customFields>
+                <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+                    <maxDepthPerCause>30</maxDepthPerCause>
+                    <rootCauseFirst>true</rootCauseFirst>
+                </throwableConverter>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_JSON"/>
+        </root>
+        <logger name="com.order.processing" level="DEBUG"/>
+    </springProfile>
+
+</configuration>

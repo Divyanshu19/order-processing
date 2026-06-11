@@ -1,0 +1,16 @@
+# Grafana datasource auto-provisioning — loaded on container startup.
+# Grafana docs: https://grafana.com/docs/grafana/latest/administration/provisioning/
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      # Aligns Grafana query step with Prometheus scrape interval (15 s)
+      # so there are no gaps in time-series graphs.
+      timeInterval: "15s"

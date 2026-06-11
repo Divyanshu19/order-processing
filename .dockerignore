@@ -1,0 +1,24 @@
+# ── Build outputs (rebuilt inside Docker) ────────────────────────────────────
+**/target/
+**/.mvn/
+
+# ── IDE & OS artifacts ────────────────────────────────────────────────────────
+**/.idea/
+**/.vscode/
+**/*.iml
+**/.DS_Store
+**/Thumbs.db
+
+# ── Git ───────────────────────────────────────────────────────────────────────
+.git/
+.gitignore
+.gitattributes
+
+# ── Docs & scripts (not needed for the build) ─────────────────────────────────
+*.md
+*.txt
+*.sh
+
+# ── Docker files themselves ───────────────────────────────────────────────────
+.dockerignore
+docker-compose.yml

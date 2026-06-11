@@ -1,0 +1,15 @@
+# Grafana dashboard provisioning — automatically loads dashboard JSON files
+# from this directory on container startup.
+# Grafana docs: https://grafana.com/docs/grafana/latest/administration/provisioning/#dashboards
+apiVersion: 1
+
+providers:
+  - name: Order Processing Dashboards
+    orgId: 1
+    type: file
+    disableDeletion: false   # allow UI edits to be saved
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

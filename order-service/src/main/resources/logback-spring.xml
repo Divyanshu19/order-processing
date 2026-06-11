@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Logback configuration for order-service.
+
+  Two appenders are defined and selected by Spring profile:
+
+    ┌──────────────────┬─────────────────────────────────────────────────────────────┐
+    │ Profile          │ Appender                                                    │
+    ├──────────────────┼─────────────────────────────────────────────────────────────┤
+    │ (default / dev)  │ CONSOLE_TEXT  — human-readable pattern, easy to read locally│
+    │ json / prod      │ CONSOLE_JSON  — LogstashEncoder, one JSON object per line   │
+    └──────────────────┴─────────────────────────────────────────────────────────────┘
+
+  Every log line (in both formats) automatically includes:
+    • traceId  — injected into MDC by micrometer-tracing-bridge-brave
+    • spanId   — injected into MDC by micrometer-tracing-bridge-brave
+    • service  — set as a custom MDC field by the root-level <property>
+
+  JSON output example (when running with -Dspring.profiles.active=json):
+  {
+    "@timestamp":  "2024-05-01T12:34:56.789Z",
+    "level":       "INFO",
+    "thread":      "http-nio-8080-exec-1",
+    "logger":      "c.o.p.order.event.SagaEventListener",
+    "message":     "[SAGA] Order CONFIRMED: orderId=42",
+    "service":     "order-service",
+    "traceId":     "4bf92f3577b34da6a3ce929d0e0e4736",
+    "spanId":      "00f067aa0ba902b7",
+    "stack_trace": "..."   ← only present when an exception is attached
+  }
+-->
+<configuration>
+
+    <!-- ── Service identity — must stay global so both profiles can reference it -->
+    <springProperty name="SERVICE_NAME" source="spring.application.name" defaultValue="order-service"/>
+
+    <!-- ══════════════════════════════════════════════════════════════════════
+         PROFILE: default / dev / test — human-readable text
+         Appender declared INSIDE the springProfile block so Logback only
+         instantiates it when this profile is active. This eliminates the
+         "Appender named [CONSOLE_JSON] not referenced" warning when running
+         locally without -Dspring.profiles.active=json.
+         ══════════════════════════════════════════════════════════════════════ -->
+    <springProfile name="default | dev | test">
+        <appender name="CONSOLE_TEXT" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <!--
+                  %mdc{traceId:- -} renders the MDC value "traceId" or "-" if absent.
+                  Micrometer Tracing populates traceId/spanId automatically when a
+                  trace context is active (inside an HTTP request or Kafka listener).
+                  They show as "-" during startup/shutdown when no active span exists.
+                -->
+                <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [${SERVICE_NAME},%mdc{traceId:--},%mdc{spanId:--}] %logger{36} - %msg%n%ex</pattern>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_TEXT"/>
+        </root>
+        <logger name="com.order.processing" level="DEBUG"/>
+        <!-- Suppress Resilience4j's own verbose internal logging -->
+        <logger name="io.github.resilience4j" level="WARN"/>
+    </springProfile>
+
+    <!-- ══════════════════════════════════════════════════════════════════════
+         PROFILE: json / prod — structured JSON for log aggregation pipelines
+         LogstashEncoder serialises every ILoggingEvent to a single-line JSON
+         object. It automatically includes all MDC fields (traceId, spanId)
+         without extra configuration once micrometer-tracing is on the classpath.
+         Both appenders write to stdout so Docker/Kubernetes log collectors
+         (Fluentd, Filebeat, Vector) can pick them up without file rotation.
+         ══════════════════════════════════════════════════════════════════════ -->
+    <springProfile name="json | prod">
+        <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <fieldNames>
+                    <message>message</message>
+                    <levelValue>[ignore]</levelValue>
+                </fieldNames>
+                <!-- Emit the service name as a top-level JSON field on every line -->
+                <customFields>{"service":"${SERVICE_NAME}"}</customFields>
+                <!-- Include full stack trace when an exception is attached -->
+                <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+                    <maxDepthPerCause>30</maxDepthPerCause>
+                    <rootCauseFirst>true</rootCauseFirst>
+                </throwableConverter>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_JSON"/>
+        </root>
+        <logger name="com.order.processing" level="DEBUG"/>
+        <logger name="io.github.resilience4j" level="WARN"/>
+    </springProfile>
+
+</configuration>

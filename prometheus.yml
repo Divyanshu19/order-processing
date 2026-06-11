@@ -1,0 +1,89 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Prometheus scrape configuration for the order-processing microservices system.
+#
+# Actuator base-path is /management on all services (set via
+# management.endpoints.web.base-path in each application.yml).
+#
+# Services scraped:
+#   order-service   → http://order-service:8080/api/management/prometheus
+#   payment-service → http://payment-service:8082/api/management/prometheus
+#   product-service → http://product-service:8081/api/management/prometheus
+#   gateway-service → http://gateway-service:8079/management/prometheus
+#   auth-service    → http://auth-service:8090/management/prometheus
+#
+# Key custom metrics available after scraping:
+#
+#   orders_placed_total                   Counter  — order placements
+#   orders_placed_failed_total            Counter  — placement failures
+#   order_create_duration_seconds         Timer    — placement latency (p50/p95/p99)
+#   saga_step_duration_seconds            Timer    — per-step saga latency (p50/p95/p99)
+#   saga_outcome_total{outcome}           Counter  — saga terminal outcomes
+#   saga_orders_inflight                  Gauge    — PENDING orders (in-memory)
+#   payments_processed_total{outcome}     Counter  — payment outcomes
+#   payment_processing_duration_seconds   Timer    — payment processing latency
+#   stock_reservations_total{outcome}     Counter  — stock reservation outcomes
+#   stock_reservation_duration_seconds    Timer    — stock reservation latency
+#   circuit_breaker_state{name}           Gauge    — 0=CLOSED 1=OPEN 2=HALF_OPEN
+#   circuit_breaker_transitions_total     Counter  — per CB: {from, to} state transitions
+#   http_orders_create_seconds            Timer    — POST /orders handler latency (p50/p95/p99)
+#   http_orders_get_seconds               Timer    — GET /orders/{id} handler latency (p50/p95/p99)
+#
+# All metrics carry a global `application` tag set by management.metrics.tags
+# in each service's application.yml, e.g.:
+#   orders_placed_total{application="order-service", ...}
+# ─────────────────────────────────────────────────────────────────────────────
+
+global:
+  scrape_interval:     15s   # scrape every service every 15 seconds
+  evaluation_interval: 15s   # evaluate alerting rules every 15 seconds
+  scrape_timeout:      10s   # fail a scrape if it takes longer than 10 s
+
+scrape_configs:
+
+  # ── Prometheus self-monitoring ─────────────────────────────────────────────
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ── order-service ──────────────────────────────────────────────────────────
+  # Context-path is /api; actuator base-path is /management.
+  # Full Prometheus endpoint: /api/management/prometheus
+  - job_name: order-service
+    metrics_path: /api/management/prometheus
+    static_configs:
+      - targets: ["order-service:8080"]
+        labels:
+          service: order-service
+
+  # ── payment-service ────────────────────────────────────────────────────────
+  - job_name: payment-service
+    metrics_path: /api/management/prometheus
+    static_configs:
+      - targets: ["payment-service:8082"]
+        labels:
+          service: payment-service
+
+  # ── product-service ────────────────────────────────────────────────────────
+  - job_name: product-service
+    metrics_path: /api/management/prometheus
+    static_configs:
+      - targets: ["product-service:8081"]
+        labels:
+          service: product-service
+
+  # ── gateway-service ────────────────────────────────────────────────────────
+  # No servlet context-path on the reactive gateway; actuator at /management/**.
+  - job_name: gateway-service
+    metrics_path: /management/prometheus
+    static_configs:
+      - targets: ["gateway-service:8079"]
+        labels:
+          service: gateway-service
+
+  # ── auth-service ───────────────────────────────────────────────────────────
+  - job_name: auth-service
+    metrics_path: /management/prometheus
+    static_configs:
+      - targets: ["auth-service:8090"]
+        labels:
+          service: auth-service
