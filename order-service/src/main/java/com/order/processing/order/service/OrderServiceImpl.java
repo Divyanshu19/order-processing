@@ -11,6 +11,7 @@ import com.order.processing.order.event.OrderEventPublisher;
 import com.order.processing.order.event.OrderPlacedEvent;
 import com.order.processing.order.exception.InsufficientStockException;
 import com.order.processing.order.exception.OrderNotFoundException;
+import com.order.processing.order.metrics.OrderMetrics;
 import com.order.processing.order.repository.OrderRepository;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
@@ -27,6 +28,7 @@ public class OrderServiceImpl implements OrderService {
     private final OrderRepository orderRepository;
     private final ProductServiceClient productServiceClient;
     private final OrderEventPublisher orderEventPublisher;
+    private final OrderMetrics orderMetrics;
 
     /**
      * Accepts an order request, validates it synchronously, persists it with
@@ -61,52 +63,69 @@ public class OrderServiceImpl implements OrderService {
         log.info("Received order request: userId={} (from JWT), productId={}, quantity={}",
                 userId, request.getProductId(), request.getQuantity());
 
-        // ── Step 1: Fetch product — validate existence and get unit price ──────
-        ProductResponse product = productServiceClient.getProductById(request.getProductId());
-        log.info("Product validated: name='{}', price={}, stock={}",
-                product.getName(), product.getPrice(), product.getStockQuantity());
+        try {
+            // Timer.recordCallable measures wall-clock time from first byte of work
+            // to Kafka publish, and propagates any checked/unchecked exception.
+            return orderMetrics.orderCreateTimer().recordCallable(() -> {
 
-        // ── Step 2: Pre-flight stock check (fail fast before any DB write) ─────
-        if (product.getStockQuantity() < request.getQuantity()) {
-            throw new InsufficientStockException(
-                    request.getProductId(),
-                    product.getStockQuantity(),
-                    request.getQuantity());
+                // ── Step 1: Fetch product — validate existence and get unit price ──
+                ProductResponse product = productServiceClient.getProductById(request.getProductId());
+                log.info("Product validated: name='{}', price={}, stock={}",
+                        product.getName(), product.getPrice(), product.getStockQuantity());
+
+                // ── Step 2: Pre-flight stock check (fail fast before any DB write) ─
+                if (product.getStockQuantity() < request.getQuantity()) {
+                    throw new InsufficientStockException(
+                            request.getProductId(),
+                            product.getStockQuantity(),
+                            request.getQuantity());
+                }
+
+                // ── Step 3: Calculate total price ─────────────────────────────────
+                BigDecimal totalPrice = product.getPrice()
+                        .multiply(BigDecimal.valueOf(request.getQuantity()));
+                log.info("Calculated totalPrice={} (price={} × qty={})",
+                        totalPrice, product.getPrice(), request.getQuantity());
+
+                // ── Step 4: Persist order with status PENDING ─────────────────────
+                Order order = Order.builder()
+                        .userId(userId)
+                        .productId(request.getProductId())
+                        .quantity(request.getQuantity())
+                        .totalPrice(totalPrice)
+                        .paymentMethod(request.getPaymentMethod())
+                        .status(OrderStatus.PENDING)
+                        .build();
+                order = orderRepository.save(order);
+                log.info("Order saved: id={}, status={}", order.getId(), order.getStatus());
+
+                // ── Step 5: Publish OrderPlacedEvent → triggers async saga ─────────
+                OrderPlacedEvent event = OrderPlacedEvent.builder()
+                        .orderId(order.getId())
+                        .userId(order.getUserId())
+                        .productId(order.getProductId())
+                        .quantity(order.getQuantity())
+                        .totalPrice(order.getTotalPrice())
+                        .paymentMethod(request.getPaymentMethod())
+                        .createdAt(order.getCreatedAt())
+                        .build();
+                orderEventPublisher.publishOrderPlaced(event);
+
+                // ── Metrics: count every successfully placed order ─────────────────
+                orderMetrics.incrementOrdersPlaced();
+
+                // ── Step 6: Return immediately — saga continues asynchronously ──────
+                return toResponse(order);
+            });
+        } catch (Exception ex) {
+            // Count failures (invalid product, stock shortage, DB error, etc.)
+            orderMetrics.incrementOrdersFailed();
+            // Re-throw so GlobalExceptionHandler maps it to the correct HTTP status
+            if (ex instanceof RuntimeException rte) {
+                throw rte;
+            }
+            throw new RuntimeException(ex);
         }
-
-        // ── Step 3: Calculate total price ─────────────────────────────────────
-        BigDecimal totalPrice = product.getPrice()
-                .multiply(BigDecimal.valueOf(request.getQuantity()));
-        log.info("Calculated totalPrice={} (price={} × qty={})",
-                totalPrice, product.getPrice(), request.getQuantity());
-
-        // ── Step 4: Persist order with status PENDING ─────────────────────────
-        // userId comes from the verified JWT uid claim — never from the request body
-        Order order = Order.builder()
-                .userId(userId)
-                .productId(request.getProductId())
-                .quantity(request.getQuantity())
-                .totalPrice(totalPrice)
-                .paymentMethod(request.getPaymentMethod())
-                .status(OrderStatus.PENDING)
-                .build();
-        order = orderRepository.save(order);
-        log.info("Order saved: id={}, status={}", order.getId(), order.getStatus());
-
-        // ── Step 5: Publish OrderPlacedEvent → triggers async saga ────────────
-        OrderPlacedEvent event = OrderPlacedEvent.builder()
-                .orderId(order.getId())
-                .userId(order.getUserId())
-                .productId(order.getProductId())
-                .quantity(order.getQuantity())
-                .totalPrice(order.getTotalPrice())
-                .paymentMethod(request.getPaymentMethod())
-                .createdAt(order.getCreatedAt())
-                .build();
-        orderEventPublisher.publishOrderPlaced(event);
-
-        // ── Step 6: Return immediately — saga continues asynchronously ─────────
-        return toResponse(order);
     }
 
     @Override

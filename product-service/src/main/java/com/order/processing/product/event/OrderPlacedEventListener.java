@@ -6,7 +6,10 @@ import com.order.processing.product.exception.InsufficientStockException;
 import com.order.processing.product.exception.ProductNotFoundException;
 import com.order.processing.product.idempotency.ProcessedEvent;
 import com.order.processing.product.idempotency.ProcessedEventRepository;
+import com.order.processing.product.metrics.StockMetrics;
 import com.order.processing.product.service.ProductService;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -68,6 +71,8 @@ public class OrderPlacedEventListener {
     private final ProductService productService;
     private final ProductEventPublisher productEventPublisher;
     private final ProcessedEventRepository processedEventRepository;
+    private final StockMetrics stockMetrics;
+    private final MeterRegistry meterRegistry;
 
     /**
      * Handles an incoming {@link OrderPlacedEvent}.
@@ -97,10 +102,14 @@ public class OrderPlacedEventListener {
         log.info("[IDEMPOTENCY] Received OrderPlacedEvent: orderId={}, productId={}, quantity={}",
                 event.getOrderId(), event.getProductId(), event.getQuantity());
 
+        Timer.Sample sample = Timer.start(meterRegistry);
+
         // ── Idempotency guard ─────────────────────────────────────────────────
         if (processedEventRepository.existsByEventTypeAndOrderId(EVENT_TYPE, event.getOrderId())) {
             log.warn("[IDEMPOTENCY] Duplicate OrderPlacedEvent detected — skipping. " +
                      "orderId={} was already processed.", event.getOrderId());
+            stockMetrics.recordSkipped();
+            sample.stop(stockMetrics.reservationTimer());
             return;
         }
 
@@ -132,32 +141,39 @@ public class OrderPlacedEventListener {
                     .build();
 
             productEventPublisher.publishProductReserved(reservedEvent);
+            stockMetrics.recordSuccess();
+            sample.stop(stockMetrics.reservationTimer());
 
         } catch (DataIntegrityViolationException ex) {
             // ── Concurrent duplicate delivery hit the unique constraint ───────
             log.warn("[IDEMPOTENCY] Concurrent duplicate OrderPlacedEvent for orderId={} — skipping.",
                     event.getOrderId());
+            stockMetrics.recordSkipped();
+            sample.stop(stockMetrics.reservationTimer());
 
         } catch (ProductNotFoundException ex) {
             // ── Step 3a: Product does not exist ───────────────────────────────
             log.warn("[SAGA] Reservation failed — product not found: orderId={}, productId={}",
                     event.getOrderId(), event.getProductId());
-
             publishFailure(event, 0, "Product not found: " + ex.getMessage());
+            stockMetrics.recordProductNotFound();
+            sample.stop(stockMetrics.reservationTimer());
 
         } catch (InsufficientStockException ex) {
             // ── Step 3b: Stock available but not enough ───────────────────────
             log.warn("[SAGA] Reservation failed — insufficient stock: orderId={}, productId={}, quantity={}",
                     event.getOrderId(), event.getProductId(), event.getQuantity());
-
             publishFailure(event, 0, "Insufficient stock: " + ex.getMessage());
+            stockMetrics.recordInsufficientStock();
+            sample.stop(stockMetrics.reservationTimer());
 
         } catch (Exception ex) {
             // ── Step 3c: Unexpected error — saga must still advance ───────────
             log.error("[SAGA] Unexpected error while reserving stock for orderId={}, productId={}: {}",
                     event.getOrderId(), event.getProductId(), ex.getMessage(), ex);
-
             publishFailure(event, 0, "Unexpected error: " + ex.getMessage());
+            stockMetrics.recordError();
+            sample.stop(stockMetrics.reservationTimer());
         }
     }
 

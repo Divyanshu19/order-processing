@@ -28,10 +28,29 @@ spring:
       bootstrap-servers: localhost:9092
       group-id: order-service-group
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      # ErrorHandlingDeserializer wraps JsonDeserializer so that a record with
+      # missing type headers (produced with spring.json.add.type.headers=false)
+      # does NOT crash the consumer thread in an infinite loop.  Instead the
+      # failed record is forwarded to the DLT by the DefaultErrorHandler.
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       properties:
         spring.json.trusted.packages: "*"
+        # The real deserializer that ErrorHandlingDeserializer delegates to
+        spring.deserializer.value.delegate.class: >
+          org.springframework.kafka.support.serializer.JsonDeserializer
+        # Fallback type when the __TypeId__ header is absent (produced with
+        # spring.json.add.type.headers=false).  Map<String,Object> is safe for
+        # all event payloads this service produces.
+        spring.json.value.default.type: java.util.Map
       auto-offset-reset: earliest
+    # ── Distributed Tracing via Micrometer Observation ────────────────────────
+    # Activates Spring Kafka 3's built-in KafkaTemplateObservation (producer) and
+    # KafkaListenerObservation (consumer) so B3 headers are injected/extracted
+    # automatically on every Kafka message, propagating the trace across services.
+    template:
+      observation-enabled: true
+    listener:
+      observation-enabled: true
 
 # ── JWT ── must match auth-service and gateway-service ───────────────────────
 # Override with JWT_SECRET env-var in production / Docker.
@@ -73,12 +92,17 @@ server:
     context-path: /api
 
 product-service:
-  base-url: http://localhost:8081/api
+  # PRODUCT_SERVICE_BASE_URL is overridden to http://product-service:8081/api in Docker
+  base-url: ${PRODUCT_SERVICE_BASE_URL:http://localhost:8081/api}
 
 payment-service:
-  base-url: http://localhost:8082/api
+  # PAYMENT_SERVICE_BASE_URL is overridden to http://payment-service:8082/api in Docker
+  base-url: ${PAYMENT_SERVICE_BASE_URL:http://localhost:8082/api}
 
 logging:
+  # Log levels — format and pattern are fully controlled by logback-spring.xml.
+  # Do NOT define logging.pattern.console here; it would silently override
+  # the LogstashEncoder appender and break structured JSON output.
   level:
     root: INFO
     com.order.processing: DEBUG
@@ -86,21 +110,57 @@ logging:
     com.order.processing.order.config.ResilienceEventLoggerConfig: DEBUG
     # Suppress Resilience4j's own internal verbose output — our listeners handle it
     io.github.resilience4j: WARN
-  pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss} [%-5level] %logger{36} - %msg%n"
+    # Ensure MetricsLogger [METRICS] lines are always visible at INFO
+    com.order.processing.order.metrics.MetricsLogger: INFO
+
+# ── Metrics log export ────────────────────────────────────────────────────────
+# Controls the MetricsLogger scheduled bean that writes metric snapshots to the
+# application log.  Use these properties to tune frequency without redeploying.
+metrics:
+  log:
+    # Delay before the first snapshot is emitted (ms). Default: 30 s.
+    initial-delay-ms: 30000
+    # Fixed delay between subsequent snapshots (ms). Default: 60 s.
+    interval-ms: 60000
 
 management:
+  # ── Endpoint base path ───────────────────────────────────────────────────
+  # Move all actuator endpoints from /actuator/** → /management/**
+  # SecurityConfig already permits /management/** (updated below via /actuator/** wildcard,
+  # and the gateway routes /management/** to each service).
   endpoints:
     web:
+      base-path: /management
       exposure:
-        include: health,info,metrics,circuitbreakers,circuitbreakerevents,retryevents
+        # Expose the full management surface: health, info, metrics, prometheus,
+        # plus Resilience4j CB/retry event streams for observability.
+        include: health,info,metrics,prometheus,circuitbreakers,circuitbreakerevents,retryevents
+
   endpoint:
     health:
+      # Show component-level detail (db, kafka, diskSpace, circuitBreakers) on every call.
       show-details: always
+      # Named health groups for Kubernetes liveness / readiness probes:
+      #   GET /management/health/live     → JVM-level liveness only (fast)
+      #   GET /management/health/ready    → DB + Kafka + diskSpace (dependency check)
+      group:
+        live:
+          include: livenessState,ping
+          show-details: never
+        ready:
+          include: readinessState,databaseHealth,kafkaHealth,diskSpace
+          show-details: always
+    info:
+      enabled: true
+    prometheus:
+      enabled: true
+
   health:
     db:
       enabled: true
     kafka:
+      enabled: true
+    diskSpace:
       enabled: true
     livenessState:
       enabled: true
@@ -108,6 +168,70 @@ management:
       enabled: true
     circuitbreakers:
       enabled: true
+
+  # ── /management/info content ─────────────────────────────────────────────
+  # Enable all built-in info contributors so /management/info is populated.
+  # Additional custom fields come from info.* properties below.
+  info:
+    env:
+      enabled: true        # exposes info.* properties from application.yml
+    java:
+      enabled: true        # JVM version, vendor, runtime
+    os:
+      enabled: true        # OS name, version, architecture
+    build:
+      enabled: true        # requires spring-boot-maven-plugin build-info goal
+
+  # ── Prometheus ────────────────────────────────────────────────────────────
+  # Attach a global "application" tag to EVERY metric exported by this service.
+  # This lets Prometheus/Grafana queries filter by service name:
+  #   orders_placed_total{application="order-service"}
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      # Enable histogram buckets for all Timer metrics (enables histogram_quantile in PromQL)
+      percentiles-histogram:
+        http.server.requests:              true
+        # ── Custom business timers ─────────────────────────────────────────────
+        order_create_duration_seconds:     true
+        saga_step_duration_seconds:        true
+        http_orders_create_seconds:        true
+        http_orders_get_seconds:           true
+      # ── SLO buckets for order creation timer ─────────────────────────────────
+      # Creates additional histogram buckets at these exact boundaries (seconds).
+      # Enables SLO-based alerting: "% of orders created within 500 ms"
+      slo:
+        order_create_duration_seconds: 50ms,100ms,200ms,500ms,1s,2s,5s
+
+  # ── Distributed Tracing ──────────────────────────────────────────────────
+  # Sample every request (1.0 = 100%) — use a lower value (e.g. 0.1) in
+  # high-throughput production environments to reduce Zipkin ingestion load.
+  tracing:
+    sampling:
+      probability: 1.0
+
+  # ── Zipkin span exporter (Spring Boot 3.x / Micrometer Tracing) ──────────
+  # 'management.zipkin.tracing.endpoint' replaces the Spring Boot 2.x
+  # 'spring.zipkin.base-url' property used by Spring Cloud Sleuth.
+  # zipkin-reporter-brave POSTs completed spans to this URL in batches.
+  # ZIPKIN_BASE_URL is overridden to http://zipkin:9411 in Docker Compose.
+  zipkin:
+    tracing:
+      endpoint: ${ZIPKIN_BASE_URL:http://localhost:9411}/api/v2/spans
+
+# ── /management/info static content ──────────────────────────────────────────
+# These values are exposed by the 'env' InfoContributor when
+# management.info.env.enabled=true. They appear as top-level keys in the
+# JSON response of GET /management/info.
+info:
+  app:
+    name: ${spring.application.name}
+    description: "Order management microservice — saga orchestrator"
+    version: "@project.version@"      # replaced by Maven resource filtering at build time
+  contact:
+    team: "Platform Engineering"
+    docs: "https://github.com/your-org/order-processing#readme"
 
 # ── Resilience4j Circuit Breaker Configuration ───────────────────────────────
 resilience4j:

@@ -31,3 +31,9 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Docker / secrets ###
+# Ignore real .env files that may contain JWT_SECRET or other credentials.
+# .env.example is the safe committed template — keep it tracked.
+.env
+!.env.example

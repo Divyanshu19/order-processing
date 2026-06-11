@@ -80,6 +80,37 @@
 			<artifactId>h2</artifactId>
 			<scope>test</scope>
 		</dependency>
+
+		<!-- ── Testcontainers — real Kafka + PostgreSQL in integration tests ─ -->
+		<!-- Versions managed by Spring Boot 3.2.5 BOM. License: MIT           -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-testcontainers</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>kafka</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>postgresql</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<!-- ── Awaitility — fluent async assertions for saga state changes ─── -->
+		<!-- Version managed by Spring Boot 3.2.5 BOM. License: Apache 2.0    -->
+		<dependency>
+			<groupId>org.awaitility</groupId>
+			<artifactId>awaitility</artifactId>
+			<scope>test</scope>
+		</dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
@@ -112,6 +143,42 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-aop</artifactId>
         </dependency>
+
+        <!-- ── Structured JSON Logging (Logstash encoder for Logback) ──────── -->
+        <!-- Encodes every log line as a JSON object that includes all MDC       -->
+        <!-- fields (traceId, spanId, serviceName) automatically.               -->
+        <!-- License: Apache 2.0                                                -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>7.4</version>
+        </dependency>
+
+        <!-- ── Micrometer Tracing (Brave bridge) ───────────────────────────── -->
+        <!-- Propagates W3C Trace-Context headers across HTTP and Kafka.         -->
+        <!-- Populates MDC with traceId + spanId so they appear in every log.   -->
+        <!-- License: Apache 2.0                                                -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-brave</artifactId>
+        </dependency>
+
+        <!-- ── Zipkin reporter ─────────────────────────────────────────────── -->
+        <!-- Ships spans to a Zipkin-compatible collector (Zipkin / Jaeger).    -->
+        <!-- License: Apache 2.0                                                -->
+        <dependency>
+            <groupId>io.zipkin.reporter2</groupId>
+            <artifactId>zipkin-reporter-brave</artifactId>
+        </dependency>
+
+        <!-- ── Prometheus registry ─────────────────────────────────────────── -->
+        <!-- Exposes all Micrometer meters at /actuator/prometheus in the        -->
+        <!-- OpenMetrics text format that Prometheus can scrape.                 -->
+        <!-- Version managed by the Spring Boot BOM.  License: Apache 2.0       -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
 	</dependencies>
 
 	<build>
@@ -127,6 +194,17 @@
 						</exclude>
 					</excludes>
 				</configuration>
+				<executions>
+					<!-- Generates META-INF/build-info.properties, which Spring Boot's
+					     BuildInfoContributor reads and exposes at /management/info
+					     when management.info.build.enabled=true. -->
+					<execution>
+						<id>build-info</id>
+						<goals>
+							<goal>build-info</goal>
+						</goals>
+					</execution>
+				</executions>
 			</plugin>
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>

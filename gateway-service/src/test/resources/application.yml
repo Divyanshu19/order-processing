@@ -9,7 +9,7 @@ spring:
       # URIs point to localhost stubs (no real services needed for context-load tests).
       routes:
         - id: auth-route
-          uri: http://localhost:8083
+          uri: http://localhost:8090
           predicates:
             - Path=/auth/**
 

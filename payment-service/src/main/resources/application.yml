@@ -28,10 +28,21 @@ spring:
       bootstrap-servers: localhost:9092
       group-id: payment-service-group
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      # ErrorHandlingDeserializer wraps JsonDeserializer so that a record with
+      # missing type headers (produced with spring.json.add.type.headers=false)
+      # does NOT crash the consumer thread in an infinite loop.
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       properties:
         spring.json.trusted.packages: "*"
+        spring.deserializer.value.delegate.class: >
+          org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.value.default.type: java.util.Map
       auto-offset-reset: earliest
+    # ── Distributed Tracing via Micrometer Observation ────────────────────────
+    template:
+      observation-enabled: true
+    listener:
+      observation-enabled: true
 
 # ── JWT ── must match auth-service and gateway-service ───────────────────────
 # Override with JWT_SECRET env-var in production / Docker.
@@ -72,27 +83,90 @@ server:
   servlet:
     context-path: /api
 
-logging:
-  level:
-    root: INFO
-    com.order.processing: DEBUG
-  pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
-
 management:
   endpoints:
     web:
+      base-path: /management
       exposure:
-        include: health,info,metrics
+        include: health,info,metrics,prometheus
+
   endpoint:
     health:
       show-details: always
+      group:
+        live:
+          include: livenessState,ping
+          show-details: never
+        ready:
+          include: readinessState,databaseHealth,kafkaHealth,diskSpace
+          show-details: always
+    info:
+      enabled: true
+    prometheus:
+      enabled: true
+
   health:
     db:
       enabled: true
     kafka:
       enabled: true
+    diskSpace:
+      enabled: true
     livenessState:
       enabled: true
     readinessState:
       enabled: true
+
+  info:
+    env:
+      enabled: true
+    java:
+      enabled: true
+    os:
+      enabled: true
+    build:
+      enabled: true
+
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests:                  true
+        # ── Custom business timer ──────────────────────────────────────────────
+        payment_processing_duration_seconds:   true
+      # SLO bucket boundaries for the payment processing timer
+      slo:
+        payment_processing_duration_seconds: 50ms,100ms,200ms,500ms,1s,2s,5s
+
+  # ── Distributed Tracing ──────────────────────────────────────────────────
+  tracing:
+    sampling:
+      probability: 1.0
+
+  # ── Zipkin span exporter (Spring Boot 3.x / Micrometer Tracing) ──────────
+  zipkin:
+    tracing:
+      endpoint: ${ZIPKIN_BASE_URL:http://localhost:9411}/api/v2/spans
+
+info:
+  app:
+    name: ${spring.application.name}
+    description: "Payment processing microservice — saga participant"
+    version: "@project.version@"
+  contact:
+    team: "Platform Engineering"
+    docs: "https://github.com/your-org/order-processing#readme"
+
+logging:
+  level:
+    root: INFO
+    com.order.processing: DEBUG
+    # Ensure MetricsLogger [METRICS] lines are always visible at INFO
+    com.order.processing.payment.metrics.MetricsLogger: INFO
+
+# ── Metrics log export ────────────────────────────────────────────────────────
+metrics:
+  log:
+    initial-delay-ms: 30000
+    interval-ms: 60000

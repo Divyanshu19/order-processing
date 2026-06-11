@@ -1,5 +1,57 @@
+# =============================================================================
+# docker-compose.yml — Order Processing System
+#
+# One-command startup (builds all images from source on first run):
+#
+#   docker compose up --build
+#
+# Subsequent starts (images already built, skip Maven):
+#
+#   docker compose up
+#
+# Rebuild a single service after a source change:
+#
+#   docker compose build order-service
+#   docker compose up -d order-service
+#
+# Stop everything and remove containers (volumes are preserved):
+#
+#   docker compose down
+#
+# Stop and wipe all persistent volumes (fresh-start databases):
+#
+#   docker compose down -v
+#
+# ── Startup order ────────────────────────────────────────────────────────────
+#
+#   Layer 0 (no deps):   kafka, postgres-*, redis, zipkin
+#   Layer 1 (infra up):  auth-service          (needs zipkin)
+#   Layer 2 (auth up):   product-service       (needs kafka, postgres-product, zipkin)
+#                        payment-service       (needs kafka, postgres-payment, zipkin)
+#                        order-service         (needs kafka, postgres-order, zipkin)
+#   Layer 3 (apps up):   gateway-service       (needs kafka, redis, auth, order,
+#                                               product, payment, zipkin)
+#   Layer 4 (gw up):     prometheus            (needs order, product, payment)
+#   Layer 5 (prom up):   grafana               (needs prometheus)
+#
+# ── Override JWT_SECRET ──────────────────────────────────────────────────────
+#
+# Copy .env.example to .env and set a strong secret before running in any
+# environment beyond a single-developer laptop:
+#
+#   echo "JWT_SECRET=$(openssl rand -hex 32)" > .env
+#
+# All five application services read JWT_SECRET from the environment; if the
+# variable is absent the safe development default is used automatically.
+# =============================================================================
+
 services:
-  # Kafka with KRaft mode (no Zookeeper required)
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # INFRASTRUCTURE — pulled images, no build step
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # ── Kafka (KRaft mode — no ZooKeeper required) ────────────────────────────
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka-kraft
@@ -19,12 +71,13 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
     ports:
-      - "9092:9092"
-      - "29092:29092"
+      - "9092:9092"   # external / host access
+      - "29092:29092" # internal plaintext listener (used by services inside the network)
     volumes:
       - kafka_data:/var/lib/kafka/data
     networks:
       - order-processing-network
+    restart: on-failure
     healthcheck:
       test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
       interval: 10s
@@ -32,7 +85,7 @@ services:
       retries: 5
       start_period: 30s
 
-  # PostgreSQL for Order Service
+  # ── PostgreSQL — Order Service ─────────────────────────────────────────────
   postgres-order:
     image: postgres:15-alpine
     container_name: postgres-order
@@ -46,13 +99,14 @@ services:
       - postgres_order_data:/var/lib/postgresql/data
     networks:
       - order-processing-network
+    restart: on-failure
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U order_user -d order_db"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # PostgreSQL for Product Service
+  # ── PostgreSQL — Product Service ───────────────────────────────────────────
   postgres-product:
     image: postgres:15-alpine
     container_name: postgres-product
@@ -66,13 +120,14 @@ services:
       - postgres_product_data:/var/lib/postgresql/data
     networks:
       - order-processing-network
+    restart: on-failure
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U product_user -d product_db"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # PostgreSQL for Payment Service
+  # ── PostgreSQL — Payment Service ───────────────────────────────────────────
   postgres-payment:
     image: postgres:15-alpine
     container_name: postgres-payment
@@ -86,13 +141,14 @@ services:
       - postgres_payment_data:/var/lib/postgresql/data
     networks:
       - order-processing-network
+    restart: on-failure
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U payment_user -d payment_db"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # ── Redis (required by Gateway RequestRateLimiter filter) ───────────────────
+  # ── Redis — Gateway RequestRateLimiter ─────────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: redis
@@ -102,90 +158,366 @@ services:
       - redis_data:/data
     networks:
       - order-processing-network
+    restart: on-failure
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # ── Auth Service ─────────────────────────────────────────────────────────────
+  # ── Zipkin — Distributed tracing collector + UI ────────────────────────────
   #
-  # Minimal JWT issuer.  POST /auth/login → signed HS256 token.
-  # The same JWT_SECRET must be set on gateway-service so it can verify tokens.
+  # All services export spans to http://zipkin:9411/api/v2/spans via
+  # zipkin-reporter-brave.  UI is available at http://localhost:9411.
   #
-  auth-service:
-    build:
-      context: .
-      dockerfile: auth-service/Dockerfile
-    container_name: auth-service
+  # Declared early (no application deps) so it is healthy before any
+  # Spring Boot service starts and attempts to flush its first span batch.
+  zipkin:
+    image: openzipkin/zipkin:3
+    container_name: zipkin
     ports:
-      - "8083:8083"
+      - "9411:9411"   # collector API + UI
     environment:
-      SERVER_PORT: 8083
-      # Share this secret with gateway-service.
-      # Override in production with a strong randomly-generated value.
-      JWT_SECRET: "${JWT_SECRET:-order-processing-default-dev-secret-key-must-be-32chars}"
+      # In-memory span storage is fine for local development.
+      # For production swap to: STORAGE_TYPE=elasticsearch + ELASTICSEARCH_HOSTS=...
+      STORAGE_TYPE: mem
     networks:
       - order-processing-network
+    restart: on-failure
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/actuator/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9411/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # APPLICATION SERVICES — built from local Dockerfiles (multi-stage Maven build)
+  #
+  # Build context is always the repo root (.) because every Dockerfile copies
+  # the parent pom.xml and sibling module pom.xml files during Stage 1 (deps).
+  #
+  # image: tags give the built image a stable, human-readable name so that:
+  #   • docker images shows meaningful names instead of <none>
+  #   • docker compose up reuses the cached image instead of rebuilding every time
+  #   • docker compose push / a registry workflow works without extra tagging
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # ── Auth Service ──────────────────────────────────────────────────────────
+  #
+  # Minimal JWT issuer: POST /auth/login → signed HS256 token.
+  # Must be healthy before gateway-service starts so the gateway can forward
+  # /auth/** requests and validate JWT_SECRET on boot.
+  #
+  # The same JWT_SECRET must be set on every service that validates tokens
+  # (gateway-service, order-service, product-service, payment-service).
+  # Set it via a .env file (see header comment) rather than editing this file.
+  auth-service:
+    build:
+      context: .                         # repo root — Stage 1 copies parent pom.xml
+      dockerfile: auth-service/Dockerfile
+    image: auth-service:local            # stable tag; avoids <none> in docker images
+    container_name: auth-service
+    ports:
+      - "8090:8090"
+    environment:
+      SPRING_PROFILES_ACTIVE: json       # structured JSON logs (LogstashEncoder)
+      SERVER_PORT: 8090
+      JWT_SECRET: "${JWT_SECRET:-order-processing-default-dev-secret-key-must-be-32chars}"
+      ZIPKIN_BASE_URL: "http://zipkin:9411"
+    networks:
+      - order-processing-network
+    restart: on-failure
+    depends_on:
+      zipkin:                            # auth-service ships spans; zipkin must be ready
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8090/management/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 30s
+      start_period: 60s                  # allow time for Maven-built JVM cold-start
 
-  # ── API Gateway ─────────────────────────────────────────────────────────────
+  # ── Order Service ──────────────────────────────────────────────────────────
   #
-  # Built from gateway-service/Dockerfile (multi-stage: Maven build → JRE runtime).
-  # No pre-built JAR or host volume mount required.
+  # Saga orchestrator: places orders, coordinates product reservation and
+  # payment via Kafka events, and exposes order CRUD over HTTP.
+  # Calls product-service and payment-service over HTTP (WebClient), so both
+  # must be healthy before order-service is considered ready for traffic.
+  order-service:
+    build:
+      context: .
+      dockerfile: order-service/Dockerfile
+    image: order-service:local
+    container_name: order-service
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: json
+      SERVER_PORT: 8080
+      # ── Database (points at the postgres-order container) ──────────────────
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-order:5432/order_db
+      SPRING_DATASOURCE_USERNAME: order_user
+      SPRING_DATASOURCE_PASSWORD: order_password
+      # ── Kafka (internal plaintext listener) ───────────────────────────────
+      # SPRING_KAFKA_BOOTSTRAP_SERVERS is the single canonical property used
+      # by both Spring Kafka producer and consumer auto-configuration.
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      # ── Inter-service HTTP (use Compose service names inside the network) ──
+      PRODUCT_SERVICE_BASE_URL: http://product-service:8081/api
+      PAYMENT_SERVICE_BASE_URL: http://payment-service:8082/api
+      # ── Security / tracing ────────────────────────────────────────────────
+      JWT_SECRET: "${JWT_SECRET:-order-processing-default-dev-secret-key-must-be-32chars}"
+      ZIPKIN_BASE_URL: "http://zipkin:9411"
+    networks:
+      - order-processing-network
+    restart: on-failure
+    depends_on:
+      postgres-order:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      zipkin:
+        condition: service_healthy
+      # order-service makes synchronous HTTP calls to product-service and
+      # payment-service at runtime; both must be up before traffic flows
+      product-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/api/management/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # ── Product Service ────────────────────────────────────────────────────────
   #
-  # First run builds the image automatically.
-  # To force a rebuild after code changes:
-  #   docker compose build gateway-service
-  #   docker compose up -d gateway-service
+  # Product catalogue and stock management; saga participant that reserves
+  # stock on receiving an order-placed Kafka event.
+  product-service:
+    build:
+      context: .
+      dockerfile: product-service/Dockerfile
+    image: product-service:local
+    container_name: product-service
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_PROFILES_ACTIVE: json
+      SERVER_PORT: 8081
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-product:5432/product_db
+      SPRING_DATASOURCE_USERNAME: product_user
+      SPRING_DATASOURCE_PASSWORD: product_password
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      JWT_SECRET: "${JWT_SECRET:-order-processing-default-dev-secret-key-must-be-32chars}"
+      ZIPKIN_BASE_URL: "http://zipkin:9411"
+    networks:
+      - order-processing-network
+    restart: on-failure
+    depends_on:
+      postgres-product:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      zipkin:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/api/management/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # ── Payment Service ────────────────────────────────────────────────────────
   #
-  # Downstream services (product / order / payment) run as local JVM processes.
-  # Inside Docker they are reachable via host.docker.internal (Docker Desktop)
-  # or 172.17.0.1 (Linux Docker bridge).
+  # Payment processing; saga participant that processes payments on receiving
+  # a payment-initiated Kafka event.
+  payment-service:
+    build:
+      context: .
+      dockerfile: payment-service/Dockerfile
+    image: payment-service:local
+    container_name: payment-service
+    ports:
+      - "8082:8082"
+    environment:
+      SPRING_PROFILES_ACTIVE: json
+      SERVER_PORT: 8082
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-payment:5432/payment_db
+      SPRING_DATASOURCE_USERNAME: payment_user
+      SPRING_DATASOURCE_PASSWORD: payment_password
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      JWT_SECRET: "${JWT_SECRET:-order-processing-default-dev-secret-key-must-be-32chars}"
+      ZIPKIN_BASE_URL: "http://zipkin:9411"
+    networks:
+      - order-processing-network
+    restart: on-failure
+    depends_on:
+      postgres-payment:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      zipkin:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/api/management/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # ── API Gateway ────────────────────────────────────────────────────────────
+  #
+  # Spring Cloud Gateway (Reactive / Netty): single entry-point for all client
+  # traffic, JWT enforcement, and per-route rate limiting via Redis.
+  #
+  # Profile 'docker' activates application-docker.yml which overrides route URIs
+  # from localhost:* to Docker Compose service names:
+  #   auth-service:8090, order-service:8080, product-service:8081,
+  #   payment-service:8082, redis (for rate limiter).
+  #
+  # Gateway depends on ALL downstream application services so clients never
+  # see a 502 due to an upstream container that is still starting.
   gateway-service:
     build:
-      context: .                          # repo root — Dockerfile needs parent pom.xml
+      context: .
       dockerfile: gateway-service/Dockerfile
+    image: gateway-service:local
     container_name: gateway-service
     ports:
       - "8079:8079"
     environment:
-      # Activate the 'docker' Spring profile.
-      # application-docker.yml (inside the built image) overrides only:
-      #   - route URIs  →  host.docker.internal (downstream services on the host)
-      #   - Redis host  →  the 'redis' Docker service
+      # 'docker' profile activates application-docker.yml which points all
+      # route URIs at Compose service names instead of localhost.
       SPRING_PROFILES_ACTIVE: docker
       SERVER_PORT: 8079
-      # Must match auth-service JWT_SECRET so token validation works
       JWT_SECRET: "${JWT_SECRET:-order-processing-default-dev-secret-key-must-be-32chars}"
+      ZIPKIN_BASE_URL: "http://zipkin:9411"
     networks:
       - order-processing-network
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8079/actuator/health || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 40s                   # extra time for JVM cold-start after build
+    restart: on-failure
     depends_on:
+      # Infrastructure
       kafka:
         condition: service_healthy
       redis:
         condition: service_healthy
+      zipkin:
+        condition: service_healthy
+      # Auth must be up: gateway forwards /auth/** and shares JWT_SECRET
       auth-service:
         condition: service_healthy
+      # Downstream application services that the gateway routes traffic to
+      order-service:
+        condition: service_healthy
+      product-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+    healthcheck:
+      # gateway-service has no servlet context-path (/api prefix) — it runs
+      # on the Reactive/Netty stack; actuator base-path is /management directly.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8079/management/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
 
+  # ════════════════════════════════════════════════════════════════════════════
+  # OBSERVABILITY — pulled images, depend on healthy application services
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # ── Prometheus ─────────────────────────────────────────────────────────────
+  #
+  # Scrapes /management/prometheus from all five services every 15 s.
+  # Configuration is mounted read-only from ./prometheus.yml.
+  # UI: http://localhost:9090
+  # License: Apache 2.0
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"    # keep 7 days of metric history
+      - "--web.enable-lifecycle"              # enables POST /-/reload for config refresh
+    networks:
+      - order-processing-network
+    restart: on-failure
+    depends_on:
+      order-service:
+        condition: service_healthy
+      product-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+      gateway-service:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── Grafana ────────────────────────────────────────────────────────────────
+  #
+  # Visualises Prometheus metrics with a pre-provisioned dashboard.
+  # UI: http://localhost:3000  (default login: admin / admin)
+  # License: AGPL-3.0 (server-side only — does not affect application code)
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: "admin"
+      GF_SECURITY_ADMIN_PASSWORD: "admin"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_PATHS_PROVISIONING: "/etc/grafana/provisioning"
+      # Open the order-processing overview dashboard on first login
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: "/etc/grafana/provisioning/dashboards/order-processing-overview.json"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - order-processing-network
+    restart: on-failure
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VOLUMES — named volumes survive container restarts and 'docker compose down'
+#           Use 'docker compose down -v' to wipe them for a clean slate.
+# ══════════════════════════════════════════════════════════════════════════════
 volumes:
   kafka_data:
   postgres_order_data:
   postgres_product_data:
   postgres_payment_data:
   redis_data:
+  prometheus_data:
+  grafana_data:
 
+# ══════════════════════════════════════════════════════════════════════════════
+# NETWORKS
+# ══════════════════════════════════════════════════════════════════════════════
 networks:
   order-processing-network:
     driver: bridge

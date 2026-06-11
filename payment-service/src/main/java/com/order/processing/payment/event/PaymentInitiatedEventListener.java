@@ -3,8 +3,11 @@ package com.order.processing.payment.event;
 import com.order.processing.payment.dto.PaymentRequest;
 import com.order.processing.payment.dto.PaymentResponse;
 import com.order.processing.payment.entity.Payment.PaymentMethod;
+import com.order.processing.payment.metrics.PaymentMetrics;
 import com.order.processing.payment.repository.PaymentRepository;
 import com.order.processing.payment.service.PaymentService;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -61,6 +64,8 @@ public class PaymentInitiatedEventListener {
      * record already exists for the given {@code orderId} before processing.
      */
     private final PaymentRepository paymentRepository;
+    private final PaymentMetrics paymentMetrics;
+    private final MeterRegistry meterRegistry;
 
     /**
      * Handles an incoming {@link PaymentInitiatedEvent}.
@@ -88,11 +93,15 @@ public class PaymentInitiatedEventListener {
         log.info("[IDEMPOTENCY] Received PaymentInitiatedEvent: orderId={}, userId={}, amount={}, method={}",
                 event.getOrderId(), event.getUserId(), event.getAmount(), event.getPaymentMethod());
 
+        Timer.Sample sample = Timer.start(meterRegistry);
+
         // ── Idempotency guard: skip if payment already processed ──────────────
         boolean alreadyProcessed = !paymentRepository.findByOrderId(event.getOrderId()).isEmpty();
         if (alreadyProcessed) {
             log.warn("[IDEMPOTENCY] Duplicate PaymentInitiatedEvent detected — skipping. " +
                      "A payment for orderId={} already exists in the DB.", event.getOrderId());
+            paymentMetrics.recordSkipped();
+            sample.stop(paymentMetrics.processingTimer());
             return;
         }
 
@@ -101,6 +110,8 @@ public class PaymentInitiatedEventListener {
             if (!simulatePaymentOutcome()) {
                 log.warn("[SAGA] Payment declined (simulated) for orderId={}", event.getOrderId());
                 publishFailure(event, "Payment declined (simulated)");
+                paymentMetrics.recordDeclined();
+                sample.stop(paymentMetrics.processingTimer());
                 return;
             }
 
@@ -130,12 +141,16 @@ public class PaymentInitiatedEventListener {
                     .build();
 
             paymentEventPublisher.publishPaymentCompleted(completedEvent);
+            paymentMetrics.recordSuccess();
+            sample.stop(paymentMetrics.processingTimer());
 
         } catch (Exception ex) {
             // ── Step 5: Unexpected error — saga must still advance ────────────
             log.error("[SAGA] Unexpected error processing payment for orderId={}: {}",
                     event.getOrderId(), ex.getMessage(), ex);
             publishFailure(event, "Unexpected error: " + ex.getMessage());
+            paymentMetrics.recordError();
+            sample.stop(paymentMetrics.processingTimer());
         }
     }
 

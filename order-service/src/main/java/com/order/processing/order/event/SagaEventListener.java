@@ -2,7 +2,10 @@ package com.order.processing.order.event;
 
 import com.order.processing.order.dto.OrderResponse;
 import com.order.processing.order.entity.Order.OrderStatus;
+import com.order.processing.order.metrics.OrderMetrics;
 import com.order.processing.order.service.OrderService;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -52,6 +55,8 @@ public class SagaEventListener {
 
     private final OrderService orderService;
     private final OrderEventPublisher orderEventPublisher;
+    private final MeterRegistry meterRegistry;
+    private final OrderMetrics orderMetrics;
 
     // ── 1. product-reserved → publish PaymentInitiatedEvent ──────────────────
 
@@ -77,6 +82,7 @@ public class SagaEventListener {
         log.info("[IDEMPOTENCY] Received ProductReservedEvent: orderId={}, productId={}, remainingStock={}",
                 event.getOrderId(), event.getProductId(), event.getRemainingStock());
 
+        Timer.Sample sample = Timer.start(meterRegistry);
         try {
             // Fetch saved order to recover userId, totalPrice, paymentMethod,
             // and — critically — the current status for the idempotency check.
@@ -86,6 +92,7 @@ public class SagaEventListener {
                 log.warn("[IDEMPOTENCY] Skipping ProductReservedEvent for orderId={} — " +
                          "order status is already '{}', expected PENDING.",
                          event.getOrderId(), order.getStatus());
+                sample.stop(OrderMetrics.sagaStepTimer(meterRegistry, "product_reserved", "skipped"));
                 return;
             }
 
@@ -99,10 +106,12 @@ public class SagaEventListener {
 
             log.info("[SAGA] Publishing PaymentInitiatedEvent for orderId={}", event.getOrderId());
             orderEventPublisher.publishPaymentInitiated(paymentEvent);
+            sample.stop(OrderMetrics.sagaStepTimer(meterRegistry, "product_reserved", "success"));
 
         } catch (Exception ex) {
             log.error("[SAGA] Error handling ProductReservedEvent for orderId={}: {}",
                     event.getOrderId(), ex.getMessage(), ex);
+            sample.stop(OrderMetrics.sagaStepTimer(meterRegistry, "product_reserved", "error"));
         }
     }
 
@@ -128,6 +137,7 @@ public class SagaEventListener {
         log.warn("[IDEMPOTENCY] Received ProductReservationFailedEvent: orderId={}, reason={}",
                 event.getOrderId(), event.getReason());
 
+        Timer.Sample sample = Timer.start(meterRegistry);
         try {
             OrderResponse order = orderService.getOrderById(event.getOrderId());
 
@@ -135,15 +145,19 @@ public class SagaEventListener {
                 log.warn("[IDEMPOTENCY] Skipping ProductReservationFailedEvent for orderId={} — " +
                          "order status is already '{}', expected PENDING.",
                          event.getOrderId(), order.getStatus());
+                sample.stop(OrderMetrics.sagaStepTimer(meterRegistry, "product_reservation_failed", "skipped"));
                 return;
             }
 
             orderService.updateOrderStatus(event.getOrderId(), OrderStatus.CANCELLED);
+            orderMetrics.recordSagaCancelled();
             log.info("[SAGA] Order CANCELLED due to reservation failure: orderId={}", event.getOrderId());
+            sample.stop(OrderMetrics.sagaStepTimer(meterRegistry, "product_reservation_failed", "success"));
 
         } catch (Exception ex) {
             log.error("[SAGA] Error handling ProductReservationFailedEvent for orderId={}: {}",
                     event.getOrderId(), ex.getMessage(), ex);
+            sample.stop(OrderMetrics.sagaStepTimer(meterRegistry, "product_reservation_failed", "error"));
         }
     }
 
@@ -169,6 +183,7 @@ public class SagaEventListener {
         log.info("[IDEMPOTENCY] Received PaymentCompletedEvent: orderId={}, paymentId={}, transactionId={}",
                 event.getOrderId(), event.getPaymentId(), event.getTransactionId());
 
+        Timer.Sample sample = Timer.start(meterRegistry);
         try {
             OrderResponse order = orderService.getOrderById(event.getOrderId());
 
@@ -176,16 +191,20 @@ public class SagaEventListener {
                 log.warn("[IDEMPOTENCY] Skipping PaymentCompletedEvent for orderId={} — " +
                          "order is already in terminal status '{}'.",
                          event.getOrderId(), order.getStatus());
+                sample.stop(OrderMetrics.sagaStepTimer(meterRegistry, "payment_completed", "skipped"));
                 return;
             }
 
             orderService.updateOrderStatus(event.getOrderId(), OrderStatus.CONFIRMED);
+            orderMetrics.recordSagaConfirmed();
             log.info("[SAGA] Order CONFIRMED: orderId={}, transactionId={}",
                     event.getOrderId(), event.getTransactionId());
+            sample.stop(OrderMetrics.sagaStepTimer(meterRegistry, "payment_completed", "success"));
 
         } catch (Exception ex) {
             log.error("[SAGA] Error handling PaymentCompletedEvent for orderId={}: {}",
                     event.getOrderId(), ex.getMessage(), ex);
+            sample.stop(OrderMetrics.sagaStepTimer(meterRegistry, "payment_completed", "error"));
         }
     }
 
@@ -210,6 +229,7 @@ public class SagaEventListener {
         log.warn("[IDEMPOTENCY] Received PaymentFailedEvent: orderId={}, reason={}",
                 event.getOrderId(), event.getReason());
 
+        Timer.Sample sample = Timer.start(meterRegistry);
         try {
             OrderResponse order = orderService.getOrderById(event.getOrderId());
 
@@ -217,12 +237,15 @@ public class SagaEventListener {
                 log.warn("[IDEMPOTENCY] Skipping PaymentFailedEvent for orderId={} — " +
                          "order is already in terminal status '{}'.",
                          event.getOrderId(), order.getStatus());
+                sample.stop(OrderMetrics.sagaStepTimer(meterRegistry, "payment_failed", "skipped"));
                 return;
             }
 
             orderService.updateOrderStatus(event.getOrderId(), OrderStatus.FAILED);
+            orderMetrics.recordSagaFailed();
             log.warn("[SAGA] Order FAILED due to payment failure: orderId={}, reason={}",
                     event.getOrderId(), event.getReason());
+            sample.stop(OrderMetrics.sagaStepTimer(meterRegistry, "payment_failed", "success"));
 
             // TODO: publish a stock-release / refund compensation event here
             //       once the compensation topics are defined.
@@ -230,6 +253,7 @@ public class SagaEventListener {
         } catch (Exception ex) {
             log.error("[SAGA] Error handling PaymentFailedEvent for orderId={}: {}",
                     event.getOrderId(), ex.getMessage(), ex);
+            sample.stop(OrderMetrics.sagaStepTimer(meterRegistry, "payment_failed", "error"));
         }
     }
 }

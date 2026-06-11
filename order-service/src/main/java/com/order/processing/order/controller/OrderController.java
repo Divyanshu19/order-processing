@@ -5,6 +5,7 @@ import com.order.processing.order.dto.OrderResponse;
 import com.order.processing.order.dto.OrderWithProductResponse;
 import com.order.processing.order.security.AuthenticatedUser;
 import com.order.processing.order.service.OrderService;
+import io.micrometer.core.annotation.Timed;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -40,6 +41,12 @@ public class OrderController {
      * @param request           body containing productId, quantity, and paymentMethod
      * @return 201 Created with the persisted {@link OrderResponse}
      */
+    @Timed(
+        value       = "http_orders_create_seconds",
+        description = "HTTP POST /orders — end-to-end handler duration including product validation, DB write, and Kafka publish",
+        percentiles = {0.50, 0.95, 0.99},
+        histogram   = true
+    )
     @PostMapping
     public ResponseEntity<OrderResponse> createOrder(
             @AuthenticationPrincipal AuthenticatedUser authenticatedUser,
@@ -71,6 +78,12 @@ public class OrderController {
      * @return 200 OK with {@link OrderWithProductResponse};
      *         404 if the order does not exist
      */
+    @Timed(
+        value       = "http_orders_get_seconds",
+        description = "HTTP GET /orders/{id} — includes CB-protected product-service enrichment call",
+        percentiles = {0.50, 0.95, 0.99},
+        histogram   = true
+    )
     @GetMapping("/{id}")
     public ResponseEntity<OrderWithProductResponse> getOrder(@PathVariable Long id) {
         log.info("GET /orders/{}", id);
