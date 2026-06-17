@@ -37,3 +37,6 @@ build/
 # .env.example is the safe committed template — keep it tracked.
 .env
 !.env.example
+
+### Local scripts (not to be pushed to remote) ###
+test-jwt-security.sh
